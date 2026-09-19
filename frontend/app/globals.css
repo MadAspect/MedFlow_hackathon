@@ -1,0 +1,69 @@
+@import "tailwindcss";
+
+/*
+ * Light, high-contrast operations-dashboard theme.
+ * Colour meaning: blue = information, green = available/safe,
+ * yellow = warning, red = critical, grey = inactive.
+ */
+:root {
+  --background: #f8fafc;
+  --foreground: #0f172a;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --animate-fade: fade-in 0.25s ease-out;
+  --animate-pop: pop 0.35s ease-out;
+  --animate-warn: warn-pulse 1.6s ease-in-out infinite;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes pop {
+  0% {
+    transform: scale(0.92);
+    opacity: 0.4;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* Subtle pulse used only for critical bottlenecks. */
+@keyframes warn-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgb(220 38 38 / 0);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgb(220 38 38 / 0.25);
+  }
+}
+
+/* The app is fully usable without animation. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
