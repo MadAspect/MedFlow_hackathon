@@ -101,3 +101,39 @@ export const DEMO_PARAMS: Partial<SimParams> = {
   failureStart: 35,
   failureUnits: 1,
 };
+
+/**
+ * Deterministic contrast scenario. A single ICU bed is the shared constraint.
+ * An early low-urgency patient (C, urgency 1, arrives at minute 2) is overtaken
+ * by later, more urgent arrivals, and treatment times differ, so the three
+ * policies choose different patients at the same decision points.
+ */
+export const CONTRAST_PATIENTS: NewPatient[] = build([
+  ["A", "Fracture", 0, 2, 20, { nurse: 1, icu_bed: 1 }],
+  ["B", "Cardiac event", 1, 5, 20, { doctor: 1, nurse: 1, icu_bed: 1 }],
+  ["C", "Routine check", 2, 1, 10, { nurse: 1, icu_bed: 1 }],
+  ["D", "Respiratory failure", 3, 4, 15, { doctor: 1, nurse: 1, icu_bed: 1 }],
+  ["E", "Sepsis", 30, 4, 15, { doctor: 1, nurse: 1, icu_bed: 1 }],
+  ["F", "Stroke", 45, 5, 15, { doctor: 1, nurse: 1, icu_bed: 1 }],
+  ["G", "Head injury", 60, 4, 15, { doctor: 1, nurse: 1, icu_bed: 1 }],
+]);
+
+/** One ICU bed; everything else is plentiful, so the ICU bed is the only bottleneck. */
+export const CONTRAST_RESOURCES: ResourceSet = {
+  doctor: 2,
+  nurse: 2,
+  bed: 2,
+  icu_bed: 1,
+  operating_room: 1,
+};
+
+/** 60-minute observation period; the run continues past it until everyone is treated. */
+export const CONTRAST_PARAMS: Partial<SimParams> = {
+  strategy: "dynamic",
+  duration: 60,
+  emergencySurge: false,
+  resourceFailure: false,
+};
+
+export const CONTRAST_MESSAGE =
+  "This scenario is designed to make the scheduling trade-offs visible. It does not change the algorithms.";

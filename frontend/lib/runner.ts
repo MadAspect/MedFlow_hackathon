@@ -8,8 +8,10 @@ import {
   type StoredRun,
 } from "./database";
 import {
+  objectiveScore,
   runEngine,
   type EngineMode,
+  type Metrics,
   type OutcomeStatus,
   type PatientOutcome,
   type SimParams,
@@ -115,17 +117,55 @@ function outcomeFromAllocation(a: AllocationRow): PatientOutcome {
   };
 }
 
-/** Rebuild the displayable output of a saved run (used by History and after a refresh). */
+/**
+ * Rebuild the displayable output of a saved run (used by History and after a refresh).
+ * Runs saved by earlier versions lack the completion fields, so they are derived
+ * here from what was stored (those runs stopped at the configured duration).
+ */
 export function outputFromStoredRun(stored: StoredRun): SimulationOutput | null {
   if (!stored.result) return null;
+  const patients = stored.allocations.map(outcomeFromAllocation);
+  const params = stored.run.parameters.params;
+  const base = stored.result.metrics;
+  const saved: Partial<Metrics> = base;
+  const arrived = patients.filter((p) => p.status !== "not_arrived");
+  const totalWait = arrived.reduce((s, p) => s + p.wait_time, 0);
+  const criticalTotal = arrived
+    .filter((p) => p.urgency >= params.criticalUrgency)
+    .reduce((s, p) => s + p.wait_time, 0);
+  const metrics: Metrics = {
+    ...base,
+    configured_duration: saved.configured_duration ?? params.duration,
+    actual_completion_time: saved.actual_completion_time ?? params.duration,
+    total_waiting_time: saved.total_waiting_time ?? totalWait,
+    critical_wait_total: saved.critical_wait_total ?? criticalTotal,
+    resource_overload: saved.resource_overload ?? 0,
+    objective_score:
+      saved.objective_score ??
+      objectiveScore({
+        total_waiting_time: totalWait,
+        critical_wait_total: criticalTotal,
+        patients_remaining: base.patients_remaining,
+        resource_overload: 0,
+        maximum_wait: base.maximum_wait,
+      }),
+  };
+  const flagged = stored.result.warnings.find((w) => w.code === "simulation_incomplete");
+  const error =
+    flagged?.message ??
+    (metrics.patients_remaining > 0
+      ? `${metrics.patients_remaining} patient(s) were not treated. This run was saved by an earlier version that stopped at the configured duration; run it again to continue until everyone is treated.`
+      : null);
   return {
     strategy: stored.run.strategy as SimulationOutput["strategy"],
-    params: stored.run.parameters.params,
+    params,
     resources: stored.run.parameters.resources,
-    patients: stored.allocations.map(outcomeFromAllocation),
-    metrics: stored.result.metrics,
+    patients,
+    metrics,
     timeline: stored.result.timeline,
     warnings: stored.result.warnings,
+    completed: error === null && metrics.patients_remaining === 0,
+    error,
     isPlaceholder: stored.run.is_placeholder,
     engine: stored.run.engine,
   };

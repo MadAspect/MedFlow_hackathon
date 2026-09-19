@@ -95,6 +95,8 @@ export function runPlaceholderSimulation(
     metrics,
     timeline,
     warnings: [{ level: "warning", code: "placeholder", message: PLACEHOLDER_NOTICE }],
+    completed: metrics.patients_remaining === 0,
+    error: null,
     isPlaceholder: true,
     engine: PLACEHOLDER_ENGINE_NAME,
   };

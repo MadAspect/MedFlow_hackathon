@@ -104,6 +104,10 @@ export interface Decision {
   queue_length: number;
   /** Higher-ranked patients that could not start because of resource shortage. */
   skipped: SkippedCandidate[];
+  /** Minutes this patient spent queued while short of a resource (absent in runs saved before v2). */
+  blocked_minutes?: number;
+  /** The resource that bound this patient's delay longest (absent if never blocked). */
+  binding_resource?: ResourceKey | null;
 }
 
 export type OutcomeStatus =
@@ -139,12 +143,16 @@ export interface TimelinePoint {
   in_use: ResourceSet;
   /** Displayed capacity (base capacity minus failed units already offline). */
   capacity: ResourceSet;
+  /** Resource blocking the most waiting patients at this minute (absent in runs saved before v2). */
+  bottleneck?: ResourceKey | null;
 }
 
 export interface BottleneckEntry {
   resource: ResourceKey;
   /** Sum over minutes of queued patients whose binding (last-to-clear) shortage was this resource. */
   blocked_patient_minutes: number;
+  /** Distinct patients whose binding shortage was this resource at some point. */
+  blocked_patients?: number;
 }
 
 export interface Metrics {
@@ -166,6 +174,18 @@ export interface Metrics {
   /** Arrived patients whose wait exceeds the safety threshold. */
   safety_threshold_breaches: number;
   bottlenecks: BottleneckEntry[];
+  /** The planned observation period (SimParams.duration). Not necessarily the end of the run. */
+  configured_duration: number;
+  /** Minute at which the last treatment finished (or the run stopped, if it could not finish). */
+  actual_completion_time: number;
+  /** Sum of every patient's wait, in minutes. */
+  total_waiting_time: number;
+  /** Sum of the waits of critical patients (urgency >= criticalUrgency), in minutes. */
+  critical_wait_total: number;
+  /** Σ over minutes of units in use beyond nominal capacity. Atomic allocation keeps this at 0. */
+  resource_overload: number;
+  /** 1·total + 4·critical + 10000·remaining + 10000·overload + 0.5·max wait. Lower is better. */
+  objective_score: number;
 }
 
 export type WarningLevel = "info" | "warning" | "critical";
@@ -186,6 +206,10 @@ export interface SimulationOutput {
   metrics: Metrics;
   timeline: TimelinePoint[];
   warnings: SimWarning[];
+  /** True only when every patient was treated and no treatment or queue is left. */
+  completed: boolean;
+  /** Why the run is incomplete (null when completed). */
+  error: string | null;
   /** True when produced by the placeholder engine – NOT a calculated result. */
   isPlaceholder: boolean;
   engine: string;

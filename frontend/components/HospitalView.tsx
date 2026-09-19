@@ -2,6 +2,7 @@
 
 import { AlertTriangle, ArrowRight, Clock, Info, Siren } from "lucide-react";
 import { useMemo, useState } from "react";
+import { CompletionBadge } from "./MetricsCards";
 import { ResourceCards } from "./ResourceCards";
 import { Badge, Button, Card, EmptyState, cx, fmt1, type Tone } from "./ui";
 import {
@@ -57,7 +58,10 @@ export function HospitalView({
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  const t = output ? Math.max(0, Math.min(output.params.duration, viewTime)) : 0;
+  // The timeline covers the whole run: the planned duration or, if patients were
+  // still waiting then, every minute up to the actual completion time.
+  const lastT = output ? Math.max(0, output.timeline.length - 1) : 0;
+  const t = Math.max(0, Math.min(lastT, viewTime));
   const point = output?.timeline[t];
 
   const flow = useMemo(() => {
@@ -136,13 +140,33 @@ export function HospitalView({
       <Card>
         <div className="flex flex-wrap items-center gap-3">
           <label htmlFor="view-time" className="text-sm font-medium text-slate-800">
-            Hospital state at minute <span className="tabular-nums">{t}</span> of {params.duration}
+            Hospital state at minute <span className="tabular-nums">{t}</span> of {lastT}
           </label>
-          <input id="view-time" type="range" min={0} max={params.duration} value={t} onChange={(e) => setViewTime(Number(e.target.value))} className="min-w-48 flex-1 accent-blue-700" />
+          <input id="view-time" type="range" min={0} max={lastT} value={t} onChange={(e) => setViewTime(Number(e.target.value))} className="min-w-48 flex-1 accent-blue-700" />
           <Button variant="secondary" onClick={() => setViewTime(output.metrics.peak_queue_time)}>Peak queue (min {output.metrics.peak_queue_time})</Button>
-          <Button variant="secondary" onClick={() => setViewTime(params.duration)}>End</Button>
+          <Button variant="secondary" onClick={() => setViewTime(lastT)}>End (min {lastT})</Button>
         </div>
-        <p className="mt-1 text-xs text-slate-600">
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-sm" role="status">
+          <CompletionBadge output={output} />
+          {!output.completed && output.error && <span className="text-xs text-red-800">{output.error}</span>}
+        </div>
+        <dl className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4 lg:grid-cols-7">
+          {[
+            ["Current time", `${t} min`],
+            ["Actual completion", `${output.metrics.actual_completion_time} min (planned ${output.metrics.configured_duration})`],
+            ["Treated so far", `${flow.treated.length} of ${output.patients.length}`],
+            ["Waiting", String(flow.waiting.length)],
+            ["Active treatments", String(flow.in_treatment.length)],
+            ["Available resources", RESOURCE_KEYS.filter((k) => point.capacity[k] > 0).map((k) => `${RESOURCE_LABELS[k]} ${Math.max(0, point.capacity[k] - point.in_use[k])}`).join(", ") || "none"],
+            ["Current bottleneck", point.bottleneck ? RESOURCE_LABELS[point.bottleneck] : "none"],
+          ].map(([label, value]) => (
+            <div key={label} className="min-w-0 rounded-md border border-slate-200 px-2 py-1.5">
+              <dt className="text-slate-500">{label}</dt>
+              <dd className="font-semibold text-slate-900">{value}</dd>
+            </div>
+          ))}
+        </dl>
+        <p className="mt-2 text-xs text-slate-600">
           {STRATEGY_LABELS[output.strategy]} · {flow.waiting.length} waiting · {flow.in_treatment.length} in treatment · {flow.treated.length} treated
           {flow.not_arrived.length > 0 ? ` · ${flow.not_arrived.length} not yet arrived` : ""}
           {params.emergencySurge && t >= params.surgeStart ? " · surge active" : ""}
@@ -253,6 +277,11 @@ export function HospitalView({
                   ))}
                 </ul>
               </div>
+              {(d.blocked_minutes ?? 0) > 0 && d.binding_resource && (
+                <p className="text-xs text-slate-700">
+                  Waited {d.blocked_minutes} min while blocked; the binding resource was {RESOURCE_LABELS[d.binding_resource]}.
+                </p>
+              )}
               {d.skipped.length > 0 && (
                 <p className="text-xs text-slate-700">
                   Higher-ranked patients skipped because resources were short:{" "}

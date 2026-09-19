@@ -25,6 +25,8 @@ const COLUMNS: Column[] = [
   { key: "maxWait", best: "maxWait", header: "Max wait", render: (v) => `${v} min` },
   { key: "icuUtilization", header: "ICU utilization", render: (v) => pct0(v) },
   { key: "remaining", best: "remaining", header: "Patients remaining", render: (v) => String(v) },
+  { key: "completion", best: "completion", header: "Completion time", render: (v) => `${v} min` },
+  { key: "objective", best: "objective", header: "Objective score", render: (v) => fmt1(v) },
 ];
 
 export function StrategyComparison() {
@@ -53,7 +55,7 @@ export function StrategyComparison() {
       ) : (
         <div className="space-y-5">
           <div className="relative overflow-x-auto">
-            <table className="w-full min-w-[640px] text-left text-sm">
+            <table className="w-full min-w-[820px] text-left text-sm">
               <thead className="border-b border-slate-200 text-xs text-slate-600 uppercase">
                 <tr>
                   <th scope="col" className="px-2 py-2">Strategy</th>
@@ -112,6 +114,12 @@ export function StrategyComparison() {
               </ul>
             </div>
           </div>
+
+          {result.comparison.sameOrderMessage && (
+            <Notice tone="blue">
+              {result.comparison.sameOrderMessage} ({result.comparison.sameOrder.map(([a, b]) => `${STRATEGY_LABELS[a]} = ${STRATEGY_LABELS[b]}`).join("; ")})
+            </Notice>
+          )}
 
           <div>
             <h3 className="text-sm font-semibold text-slate-900">Treatment order (first 15 started)</h3>

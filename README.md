@@ -2,6 +2,8 @@
 
 > **Web app:** the dashboard lives in [`frontend/`](frontend/README.md) (Next.js + TypeScript). It includes a working TypeScript simulation engine that uses the data shapes below, so the UI does not depend on the Python `run_simulation` being finished.
 
+> **MedFlow scheduling, simulation, optimization, and result comparison are deterministic mathematical algorithms. No AI model is used in the simulation.**
+
 ## Simulation Interface
 
 The MedFlow simulation accepts patients and hospital resources.

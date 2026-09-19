@@ -1,6 +1,6 @@
 import { buildWarnings, computeMetrics } from "./metrics";
 import { DEFAULT_WEIGHTS, rankQueue, scoreBreakdown } from "./policies";
-import { cloneResourceSet, emptyResourceSet } from "./resources";
+import { RESOURCE_LABELS, cloneResourceSet, emptyResourceSet } from "./resources";
 import { generateSurgePatients } from "./surge";
 import {
   RESOURCE_KEYS,
@@ -16,7 +16,7 @@ import {
   type TimelinePoint,
 } from "./types";
 
-export const ENGINE_NAME = "medflow-ts-discrete-v1";
+export const ENGINE_NAME = "medflow-ts-discrete-v2";
 
 export class SimulationInputError extends Error {
   constructor(message: string) {
@@ -103,18 +103,27 @@ export function assertValidInput(
 }
 
 /**
- * Discrete-time (1-minute step) hospital simulation.
+ * Deterministic discrete-event hospital simulation. No randomness, no network,
+ * no AI: only queues, sorting and arithmetic.
  *
- * At every minute T:
- *   1. Release resources of treatments that finish at or before T.
- *   2. Admit patients whose arrival time is <= T to the queue.
- *   3. Rank the queue with the selected policy and walk it in order, starting
- *      every patient whose whole resource set is currently free, so
+ * Every iteration handles one event time T:
+ *   1. Admit patients whose arrival time is <= T to the waiting queue.
+ *   2. Release the resources of treatments that finish at or before T.
+ *   3. Rank the queue with the selected policy and walk it in order. A patient
+ *      starts only if EVERY resource they need is free (all-or-nothing), so
  *      Σ allocated_r <= capacity_r always holds.
+ *   4. Record the state, then jump to the next event: the next arrival, the
+ *      earliest treatment completion, or the resource-failure start.
+ *
+ * A bottleneck (a patient waiting for a resource) is NOT an end condition: the
+ * clock simply advances to the next completion, which releases resources, and
+ * allocation is attempted again. The configured duration is only the planned
+ * observation period; the run continues until every patient is treated.
+ * If patients can never be treated (for example a need above total capacity)
+ * the result is returned with `completed: false` and an explicit `error`.
  *
  * Treatment is non-preemptive. A failed resource unit goes offline at the
  * failure start, or when the unit next becomes free if it is in use.
- * The result is fully deterministic for identical inputs.
  */
 export function runSimulation(
   patients: SimPatient[],
@@ -125,7 +134,11 @@ export function runSimulation(
   const surge = params.emergencySurge
     ? generateSurgePatients(params.surgeStart, params.surgeCount)
     : [];
-  const all = [...patients, ...surge];
+  // Deep copy: a run must never share mutable patient state with another run.
+  const all: SimPatient[] = [...patients, ...surge].map((p) => ({
+    ...p,
+    required_resources: { ...p.required_resources },
+  }));
   assertValidInput(all, resources, params);
 
   const n = all.length;
@@ -134,12 +147,26 @@ export function runSimulation(
   const decisions: (Decision | null)[] = new Array(n).fill(null);
   const everBlocked: boolean[] = new Array(n).fill(false);
   const blockedMinutes = emptyResourceSet();
+  const blockedPatientSets = new Map<ResourceKey, Set<number>>(
+    RESOURCE_KEYS.map((k) => [k, new Set<number>()]),
+  );
+  /** Per patient: minutes blocked, split by binding resource. */
+  const patientBlocked: ResourceSet[] = all.map(() => emptyResourceSet());
   const inUse = emptyResourceSet();
   const running: number[] = [];
   let queue: number[] = [];
   let treatedCount = 0;
   let seq = 0;
-  const timeline: TimelinePoint[] = [];
+
+  interface Snapshot {
+    t: number;
+    queue_length: number;
+    in_treatment: number;
+    treated: number;
+    in_use: ResourceSet;
+    bottleneck: ResourceKey | null;
+  }
+  const snapshots: Snapshot[] = [];
 
   const failedUnits = params.resourceFailure
     ? Math.min(params.failureUnits, resources[params.failedResource])
@@ -198,8 +225,26 @@ export function runSimulation(
     return binding;
   };
 
-  for (let t = 0; t <= duration; t++) {
-    // 1. Release finished treatments.
+  let t = 0;
+  let stopTime = 0;
+  let error: string | null = null;
+  // Each iteration consumes at least one arrival, completion or failure event,
+  // so the loop is finite; the guard only protects against a future logic bug.
+  const maxIterations = 4 * n + 16;
+
+  for (let iteration = 0; ; iteration++) {
+    if (iteration > maxIterations) {
+      error = "Simulation did not converge: the event loop exceeded its safety limit.";
+      stopTime = t;
+      break;
+    }
+
+    // 1. Admit arrivals.
+    while (arrivalPtr < n && all[arrivalOrder[arrivalPtr]].arrival_time <= t) {
+      queue.push(arrivalOrder[arrivalPtr++]);
+    }
+
+    // 2. Release finished treatments (and recalculate availability).
     for (let r = running.length - 1; r >= 0; r--) {
       const idx = running[r];
       if (startTime[idx]! + all[idx].treatment_time <= t) {
@@ -209,15 +254,10 @@ export function runSimulation(
       }
     }
 
-    // 2. Admit arrivals.
-    while (arrivalPtr < n && all[arrivalOrder[arrivalPtr]].arrival_time <= t) {
-      queue.push(arrivalOrder[arrivalPtr++]);
-    }
-
     const cap = allocationCapacity(t);
 
-    // 3. Allocate (the horizon itself is only a final snapshot).
-    if (t < duration && queue.length > 0) {
+    // 3. Select and allocate atomically.
+    if (queue.length > 0) {
       const queueLength = queue.length;
       const ranked = rankQueue(
         queue.map((index) => ({ index, patient: all[index] })),
@@ -252,47 +292,131 @@ export function runSimulation(
       }
 
       queue = queue.filter((i) => !startedNow.has(i));
+    }
 
-      // Whoever is still queued is blocked by what is short after this pass.
-      // The delay is attributed to the binding resource: the shortage that
-      // would be resolved last, once running treatments finish.
-      for (const i of queue) {
-        const short = shortages(all[i].required_resources, cap);
-        if (short.length === 0) continue;
-        everBlocked[i] = true;
-        blockedMinutes[bindingResource(all[i].required_resources, short, cap)]++;
+    // Whoever is still queued is blocked by what is short right now. The delay
+    // is attributed to the binding resource: the shortage that would be
+    // resolved last, once running treatments finish.
+    const blockedNow: { index: number; binding: ResourceKey }[] = [];
+    const blockedPerResource = emptyResourceSet();
+    for (const i of queue) {
+      const short = shortages(all[i].required_resources, cap);
+      if (short.length === 0) continue;
+      const binding = bindingResource(all[i].required_resources, short, cap);
+      blockedNow.push({ index: i, binding });
+      blockedPerResource[binding]++;
+      everBlocked[i] = true;
+      blockedPatientSets.get(binding)!.add(i);
+    }
+    let bottleneck: ResourceKey | null = null;
+    for (const k of RESOURCE_KEYS) {
+      if (
+        blockedPerResource[k] > 0 &&
+        (bottleneck === null || blockedPerResource[k] > blockedPerResource[bottleneck])
+      ) {
+        bottleneck = k;
       }
     }
 
-    // Displayed capacity: a failed unit that is still busy stays visible until freed.
-    const capacityShown = emptyResourceSet();
-    for (const k of RESOURCE_KEYS) capacityShown[k] = Math.max(cap[k], inUse[k]);
-
-    timeline.push({
+    // 4. Record the state at this event time.
+    snapshots.push({
       t,
       queue_length: queue.length,
       in_treatment: running.length,
       treated: treatedCount,
       in_use: cloneResourceSet(inUse),
+      bottleneck,
+    });
+    stopTime = t;
+
+    if (treatedCount === n && queue.length === 0 && running.length === 0) break;
+
+    // Next meaningful event: an arrival or a completion makes progress; the
+    // failure start only changes capacity, so it is a timeline event too.
+    let nextProgress = Infinity;
+    if (arrivalPtr < n) nextProgress = all[arrivalOrder[arrivalPtr]].arrival_time;
+    for (const idx of running) {
+      nextProgress = Math.min(nextProgress, startTime[idx]! + all[idx].treatment_time);
+    }
+    if (nextProgress === Infinity) {
+      error = describeStall(
+        queue.map((i) => all[i]),
+        cap,
+        resources,
+        params,
+        t,
+      );
+      break;
+    }
+    let next = nextProgress;
+    if (failedUnits > 0 && params.failureStart > t) next = Math.min(next, params.failureStart);
+
+    // Patients blocked now stay blocked until the next event.
+    const span = next - t;
+    for (const { index, binding } of blockedNow) {
+      blockedMinutes[binding] += span;
+      patientBlocked[index][binding] += span;
+    }
+    t = next;
+  }
+
+  // Completion guarantee: never report success while anyone is untreated.
+  const verified = queue.length === 0 && running.length === 0 && treatedCount === n;
+  if (!verified && error === null) {
+    error = `Simulation ended in an inconsistent state: ${queue.length} waiting, ${running.length} in treatment, ${treatedCount} of ${n} treated.`;
+  }
+  const completed = verified && error === null;
+
+  const actualCompletionTime = stopTime;
+  const horizon = Math.max(duration, actualCompletionTime);
+
+  // Per-minute timeline (the state is constant between events).
+  const timeline: TimelinePoint[] = [];
+  let snap = 0;
+  for (let m = 0; m <= horizon; m++) {
+    while (snap + 1 < snapshots.length && snapshots[snap + 1].t <= m) snap++;
+    const s = snapshots[snap];
+    const cap = allocationCapacity(m);
+    // Displayed capacity: a failed unit that is still busy stays visible until freed.
+    const capacityShown = emptyResourceSet();
+    for (const k of RESOURCE_KEYS) capacityShown[k] = Math.max(cap[k], s.in_use[k]);
+    timeline.push({
+      t: m,
+      queue_length: s.queue_length,
+      in_treatment: s.in_treatment,
+      treated: s.treated,
+      in_use: cloneResourceSet(s.in_use),
       capacity: capacityShown,
+      bottleneck: s.bottleneck,
     });
   }
 
+  // For a patient who never started (incomplete runs only), wait so far.
   const outcomes: PatientOutcome[] = all.map((p, i) => {
     const start = startTime[i];
     const decision = decisions[i];
     const end = start === null ? null : start + p.treatment_time;
     let status: OutcomeStatus;
-    if (p.arrival_time > duration) status = "not_arrived";
+    if (p.arrival_time > actualCompletionTime) status = "not_arrived";
     else if (start === null) {
       status = p.urgency >= params.criticalUrgency ? "critical_waiting" : "waiting";
-    } else status = end! <= duration ? "treated" : "in_treatment";
+    } else status = "treated";
 
     const wait =
-      start !== null ? start - p.arrival_time : Math.max(0, duration - p.arrival_time);
+      start !== null ? start - p.arrival_time : Math.max(0, actualCompletionTime - p.arrival_time);
     const priority =
       decision?.score.total ??
-      scoreBreakdown(p, Math.max(duration, p.arrival_time), params.weights).total;
+      scoreBreakdown(p, Math.max(actualCompletionTime, p.arrival_time), params.weights).total;
+
+    if (decision) {
+      const per = patientBlocked[i];
+      const total = RESOURCE_KEYS.reduce((sum, k) => sum + per[k], 0);
+      decision.blocked_minutes = total;
+      decision.binding_resource =
+        total === 0
+          ? null
+          : RESOURCE_KEYS.reduce((best, k) => (per[k] > per[best] ? k : best), RESOURCE_KEYS[0]);
+    }
 
     return {
       id: p.id,
@@ -311,13 +435,18 @@ export function runSimulation(
     };
   });
 
+  const blockedPatientCounts = emptyResourceSet();
+  for (const k of RESOURCE_KEYS) blockedPatientCounts[k] = blockedPatientSets.get(k)!.size;
+
   const metrics = computeMetrics({
     outcomes,
     timeline,
     resources,
     params,
     blockedPatientMinutes: blockedMinutes,
+    blockedPatientCounts,
     resourceConflicts: everBlocked.filter(Boolean).length,
+    actualCompletionTime,
   });
 
   return {
@@ -334,10 +463,35 @@ export function runSimulation(
       resources,
       params,
       surgeAdded: surge.length,
+      error,
     }),
+    completed,
+    error,
     isPlaceholder: false,
     engine: ENGINE_NAME,
   };
+}
+
+/** Explain why the queue can never drain (nothing running, nothing left to arrive). */
+function describeStall(
+  waiting: SimPatient[],
+  cap: ResourceSet,
+  nominal: ResourceSet,
+  params: SimParams,
+  t: number,
+): string {
+  const reasons = waiting.slice(0, 5).map((p) => {
+    const short = RESOURCE_KEYS.filter((k) => (p.required_resources[k] ?? 0) > cap[k]);
+    const detail = short
+      .map((k) => {
+        const failed = params.resourceFailure && k === params.failedResource && cap[k] < nominal[k];
+        return `${p.required_resources[k]} ${RESOURCE_LABELS[k].toLowerCase()} but only ${cap[k]} ${failed ? "remain after the failure" : "exist"}`;
+      })
+      .join(" and ");
+    return `${p.id} needs ${detail}`;
+  });
+  const more = waiting.length > 5 ? `, and ${waiting.length - 5} more` : "";
+  return `Not all patients can be treated: ${waiting.length} patient(s) are still waiting at minute ${t} with nothing left to release or arrive (${reasons.join("; ")}${more}). Increase that resource or reduce the patient's requirement.`;
 }
 
 /** Run the same input through every strategy (used by the Strategy Lab). */

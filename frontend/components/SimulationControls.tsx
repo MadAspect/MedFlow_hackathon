@@ -1,8 +1,9 @@
 "use client";
 
-import { Play, RotateCcw } from "lucide-react";
+import { FlaskConical, Play, RotateCcw } from "lucide-react";
 import { useState } from "react";
 import { Button, Card, Field, NumberInput, Notice, cx, inputClass } from "./ui";
+import { CONTRAST_MESSAGE } from "@/lib/demo";
 import { useStore } from "@/lib/store";
 import {
   PLACEHOLDER_NOTICE,
@@ -24,7 +25,7 @@ const WEIGHT_FIELDS: { key: keyof Weights; label: string; hint: string }[] = [
 ];
 
 export function SimulationControls() {
-  const { params, setParams, runSimulation, resetRun, running, engineMode, patients, resourcesSaved } = useStore();
+  const { params, setParams, runSimulation, runContrast, resetRun, running, engineMode, patients, resourcesSaved } = useStore();
   const [errors, setErrors] = useState<FieldErrors>({});
 
   async function run() {
@@ -72,7 +73,7 @@ export function SimulationControls() {
       </fieldset>
 
       <div className="mt-4 grid gap-4 md:grid-cols-3">
-        <Field label="Simulation duration (min)" htmlFor="duration" error={errors.duration}>
+        <Field label="Planned duration (min)" htmlFor="duration" error={errors.duration} hint="observation period — the run continues past it until every patient is treated">
           <NumberInput id="duration" value={params.duration} min={1} step={5} invalid={!!errors.duration} onValue={(n) => setParams({ duration: n })} />
         </Field>
 
@@ -146,6 +147,9 @@ export function SimulationControls() {
         <Button variant="secondary" onClick={() => void resetRun()} disabled={running}>
           <RotateCcw size={16} aria-hidden /> Reset Current Run
         </Button>
+        <Button variant="secondary" onClick={() => void runContrast()} disabled={running}>
+          <FlaskConical size={16} aria-hidden /> Load contrast scenario
+        </Button>
         {(patients.length === 0 || !resourcesSaved) && (
           <span className="text-xs text-amber-700">
             {patients.length === 0 ? "Add patients first. " : ""}
@@ -153,6 +157,9 @@ export function SimulationControls() {
           </span>
         )}
       </div>
+      <p className="mt-2 text-xs text-slate-600">
+        <strong>Contrast scenario:</strong> {CONTRAST_MESSAGE} It replaces the current patients and resources with a small deterministic example.
+      </p>
     </Card>
   );
 }

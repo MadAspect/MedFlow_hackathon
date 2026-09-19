@@ -48,10 +48,10 @@ export function ResultsCharts({ output }: { output: SimulationOutput | null }) {
 
   const { timeline, params } = output;
   const events: ReactNode[] = [];
-  if (params.emergencySurge && params.surgeStart <= params.duration) {
+  if (params.emergencySurge && params.surgeStart <= timeline.length - 1) {
     events.push(<ReferenceLine key="surge" x={params.surgeStart} stroke={CHART_COLORS.yellow} strokeDasharray="4 3" label={{ value: "Surge", fill: CHART_COLORS.yellow, fontSize: 11, position: "insideTopRight" }} />);
   }
-  if (params.resourceFailure && params.failureStart <= params.duration) {
+  if (params.resourceFailure && params.failureStart <= timeline.length - 1) {
     events.push(<ReferenceLine key="fail" x={params.failureStart} stroke={CHART_COLORS.red} strokeDasharray="4 3" label={{ value: "Failure", fill: CHART_COLORS.red, fontSize: 11, position: "insideTopLeft" }} />);
   }
 

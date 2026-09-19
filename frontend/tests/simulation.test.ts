@@ -43,7 +43,7 @@ const R = (over: Partial<ResourceSet> = {}): ResourceSet => ({
 
 /** Independent replay: recompute usage per minute from start/end times only. */
 function assertInvariants(out: SimulationOutput) {
-  const { duration } = out.params;
+  const horizon = out.timeline.length; // covers the whole run, not just the planned duration
   const started = out.patients.filter((p) => p.start_time !== null);
 
   // No duplicate allocation: every patient starts at most once.
@@ -52,7 +52,16 @@ function assertInvariants(out: SimulationOutput) {
   const seqs = started.map((p) => p.decision!.seq);
   expect(new Set(seqs).size).toBe(seqs.length);
 
-  for (let t = 0; t < duration; t++) {
+  // A run is only "completed" when nobody is left untreated.
+  if (out.completed) {
+    expect(out.error).toBeNull();
+    expect(out.metrics.patients_remaining).toBe(0);
+    expect(out.patients.every((p) => p.status === "treated")).toBe(true);
+  } else {
+    expect(out.error).toBeTruthy();
+  }
+
+  for (let t = 0; t < horizon; t++) {
     const used = emptyResourceSet();
     for (const p of started) {
       if (p.start_time! <= t && t < p.end_time!) {
@@ -79,11 +88,13 @@ describe("waiting time and score", () => {
   it("splits S_i(T) into its weighted terms", () => {
     const s = scoreBreakdown({ ...P("A", 10, 5, 30), emergency: true }, 30, DEFAULT_WEIGHTS);
     expect(s.waiting_time).toBe(20);
-    expect(s.urgency).toBeCloseTo(4 * 5);
-    expect(s.waiting).toBeCloseTo(0.15 * 20);
+    // priorityScore = 5.0·urgency + 0.35·waiting + 2.0·risk + 3.0·emergency
+    expect(DEFAULT_WEIGHTS).toEqual({ alpha: 5, beta: 0.35, gamma: 2, delta: 3 });
+    expect(s.urgency).toBeCloseTo(5 * 5);
+    expect(s.waiting).toBeCloseTo(0.35 * 20);
     expect(s.risk_value).toBeCloseTo(1 - Math.exp(-20 / 30));
-    expect(s.risk).toBeCloseTo(3 * (1 - Math.exp(-20 / 30)));
-    expect(s.emergency).toBeCloseTo(2);
+    expect(s.risk).toBeCloseTo(2 * (1 - Math.exp(-20 / 30)));
+    expect(s.emergency).toBeCloseTo(3);
     expect(s.total).toBeCloseTo(s.urgency + s.waiting + s.risk + s.emergency);
   });
 });
@@ -139,10 +150,14 @@ describe("edge cases", () => {
     expect(out.warnings.some((w) => w.code === "unschedulable_icu_bed")).toBe(true);
   });
 
-  it("marks patients arriving after the horizon as not arrived", () => {
+  it("still treats patients who arrive after the configured duration", () => {
     const out = runSimulation([P("A", 100, 3, 10)], R({ doctor: 1 }), { duration: 60 });
-    expect(out.patients[0].status).toBe("not_arrived");
-    expect(out.metrics.patients_arrived).toBe(0);
+    expect(out.completed).toBe(true);
+    expect(out.patients[0].status).toBe("treated");
+    expect(out.patients[0].start_time).toBe(100);
+    expect(out.metrics.configured_duration).toBe(60);
+    expect(out.metrics.actual_completion_time).toBe(110);
+    assertInvariants(out);
   });
 });
 
@@ -275,7 +290,7 @@ describe("scheduling policies", () => {
   it("records the score components that explain each decision", () => {
     const out = runSimulation([P("A", 0, 4, 10)], R({ doctor: 1 }), { duration: 30 });
     const d = out.patients[0].decision!;
-    expect(d.score.urgency).toBeCloseTo(16);
+    expect(d.score.urgency).toBeCloseTo(20); // 5.0 × urgency 4
     expect(d.time).toBe(0);
     expect(d.available_before.doctor).toBe(1);
     expect(d.required).toEqual({ doctor: 1 });
@@ -305,24 +320,27 @@ describe("metrics", () => {
       R({ doctor: 1 }),
       { strategy: "fcfs", duration: 25, safetyThreshold: 5 },
     );
-    // waits: A 0, B 10, C 20
-    expect(out.metrics.patients_treated).toBe(2); // A (0-10), B (10-20); C starts at 20, ends 30
+    // waits: A 0, B 10, C 20. The run continues past the 25-minute duration to minute 30.
+    expect(out.metrics.patients_treated).toBe(3);
+    expect(out.metrics.actual_completion_time).toBe(30);
+    expect(out.metrics.total_waiting_time).toBe(30);
     expect(out.metrics.average_wait).toBeCloseTo(10);
     expect(out.metrics.maximum_wait).toBe(20);
     expect(out.metrics.critical_wait).toBeCloseTo(5); // A and B
     expect(out.metrics.safety_threshold_breaches).toBe(2);
-    expect(out.metrics.patients_remaining).toBe(1);
+    expect(out.metrics.patients_remaining).toBe(0);
     expect(out.metrics.queue_length_final).toBe(0);
     expect(out.metrics.peak_queue_length).toBe(2);
   });
 
-  it("counts still-waiting patients with their wait so far", () => {
+  it("counts the full wait of a patient who queues past the configured duration", () => {
     const out = runSimulation([P("A", 0, 3, 100), P("B", 10, 3, 10)], R({ doctor: 1 }), {
       duration: 50,
     });
     const b = out.patients.find((p) => p.id === "B")!;
-    expect(b.status).toBe("waiting");
-    expect(b.wait_time).toBe(40);
+    expect(b.status).toBe("treated");
+    expect(b.start_time).toBe(100);
+    expect(b.wait_time).toBe(90);
   });
 
   it("builds a wait histogram", () => {
@@ -392,8 +410,10 @@ describe("resource failure", () => {
       failureUnits: 1,
     });
     expect(ok.metrics.patients_treated).toBe(4);
-    // With one ICU bed after minute 30, C and D can no longer run in parallel.
-    expect(failed.metrics.patients_treated).toBeLessThan(ok.metrics.patients_treated);
+    // With one ICU bed after minute 30, C and D can no longer run in parallel, so the
+    // run takes longer but every patient is still treated.
+    expect(failed.metrics.patients_treated).toBe(4);
+    expect(failed.metrics.actual_completion_time).toBeGreaterThan(ok.metrics.actual_completion_time);
     expect(failed.metrics.maximum_wait).toBeGreaterThan(ok.metrics.maximum_wait);
     expect(failed.warnings.some((w) => w.code === "failure")).toBe(true);
     assertInvariants(failed);
@@ -493,7 +513,9 @@ describe("demo scenario", () => {
     expect(out.metrics.peak_queue_time).toBeGreaterThanOrEqual(20);
     expect(out.timeline[19].queue_length).toBeLessThan(out.metrics.peak_queue_length);
     expect(out.metrics.bottlenecks[0].resource).toBe("icu_bed");
-    expect(out.metrics.resource_utilization.icu_bed).toBeGreaterThan(0.7);
+    expect(out.metrics.resource_utilization.icu_bed).toBeGreaterThan(0.5);
+    expect(out.completed).toBe(true);
+    expect(out.metrics.actual_completion_time).toBeGreaterThan(out.metrics.configured_duration);
     expect(out.timeline[59].capacity.icu_bed).toBeLessThan(2);
 
     const noFailure = runSimulation(patients, DEMO_RESOURCES, {

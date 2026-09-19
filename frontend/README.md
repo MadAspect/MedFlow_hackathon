@@ -4,6 +4,9 @@
 
 MedFlow simulates how a hospital allocates limited resources (doctors, nurses, beds, ICU beds, operating rooms) to incoming patients, and compares three scheduling strategies on identical data.
 
+> **MedFlow scheduling, simulation, optimization, and result comparison are deterministic mathematical algorithms. No AI model is used in the simulation.**
+> The simulation needs no AI API key and, apart from saving results to the database, runs entirely offline (no network calls, no randomness). Repeating a run with the same input gives identical output.
+
 ## Problem statement
 
 > Given the current patient queue and available doctors, nurses, beds, ICU beds, and operating rooms, which patient should be treated next, and how does the hospital perform under different scheduling strategies?
@@ -24,7 +27,9 @@ _Placeholders — add captures from a demo run:_
 - **Simulation** – three strategies, duration, emergency surge, resource failure (resource, start, units), adjustable priority weights.
 - **Interactive hospital view** – drag through time (minute-by-minute), resource cards (green < 70 %, yellow 70–89 %, red ≥ 90 %), Waiting → In treatment → Treated flow, critical/overdue highlighting, current allocations, per-patient **decision explanation**.
 - **Results** – 9 KPI cards, 4 charts (queue length, utilization, wait distribution, treated vs waiting) and a strategy-comparison chart, all from real engine output.
-- **Strategy Lab** – FCFS vs Urgency Only vs Dynamic Priority on the same input, best value highlighted, treatment-order diff, findings computed from the metrics.
+- **Strategy Lab** – FCFS vs Urgency Only vs Dynamic Priority on the same input, best value highlighted, treatment-order diff, findings computed from the metrics. When two strategies start patients in the same order it says so.
+- **Normal vs efficient system** – First-Come, First-Served vs Dynamic Priority, run as two separate simulations on identical data. A metric table (patients treated, completion time, waiting times, utilization, bottleneck, objective score) with the difference and percentage improvement, a fixed-template explanation, and the *Best tested configuration* (adds one unit of each resource and re-simulates).
+- **Contrast scenario** – a deterministic example (button on the Simulation page) built so the three strategies visibly choose differently. It does not change the algorithms.
 - **History** – every run is stored; open any past run.
 - **Graceful degradation** – without Supabase credentials the app runs on browser storage and says so.
 
@@ -45,25 +50,40 @@ For patient *i* at simulation time *T* (minutes):
 **Dynamic priority score**
 
 ```
-S_i(T) = α·u_i + β·w_i + γ·r_i + δ·e_i        defaults: α = 4.0, β = 0.15, γ = 3.0, δ = 2.0
+S_i(T) = α·u_i + β·w_i + γ·r_i + δ·e_i        defaults: α = 5.0, β = 0.35, γ = 2.0, δ = 3.0
 ```
 
 **Resource constraint** (never violated): for every resource *r* and minute, `Σ allocated_r ≤ capacity_r`.
 
-**Simulation loop** (1-minute steps, `lib/simulation/engine.ts`): release finished treatments → admit arrivals → rank the queue with the chosen policy → walk the ranking and start every patient whose *whole* resource set is free (a blocked higher-ranked patient is skipped and recorded). Treatment is non-preemptive. The engine is deterministic.
+**Simulation loop** (discrete-event, `lib/simulation/engine.ts`): admit arrivals → release finished treatments → rank the queue with the chosen policy → walk the ranking and start every patient whose *whole* resource set is free (allocation is all-or-nothing; a blocked higher-ranked patient is skipped and recorded) → record the state → jump to the next event (next arrival, earliest completion, or the resource-failure start). Treatment is non-preemptive. The engine is deterministic.
+
+**A bottleneck never ends the run.** A patient who waits for a resource simply stays queued; time advances to the earliest completion, that treatment's resources are released, and allocation is attempted again. The configured *duration* is the planned observation period only: if patients remain after it the run continues, and the result stores both `configured_duration` and `actual_completion_time`. Before returning, the engine verifies `waiting = 0`, `active treatments = 0` and `treated = total`. If that does not hold (for example a patient needs 2 ICU beds but only 1 exists) the result has `completed: false` and an explicit `error`, and the UI shows "Simulation error — not all patients were treated" instead of "Completed".
 
 **Emergency surge**: 10 deterministic synthetic emergency arrivals, one per minute from the surge start (mostly ICU cases).
 **Resource failure**: the chosen number of units go offline at the failure start; a unit that is in use goes offline when its treatment finishes.
 
-**Metrics** (`lib/simulation/metrics.ts`): patients treated; average, maximum and critical-patient wait (urgency ≥ 4; patients still queued count with their wait so far); queue length; patients remaining; utilization per resource (used unit-minutes ÷ nominal capacity-minutes); resource conflicts (distinct patients blocked by a shortage); safety-threshold breaches (wait > 30 min by default); bottlenecks (patient-minutes of waiting attributed to the *binding* shortage — the one that clears last; ties go to the scarcer resource).
+**Metrics** (`lib/simulation/metrics.ts`): patients treated; average, maximum and critical-patient wait (urgency ≥ 4; patients still queued in an incomplete run count with their wait so far); queue length; patients remaining; utilization per resource (used unit-minutes ÷ nominal capacity-minutes over the longer of the planned duration and the actual completion time); resource conflicts (distinct patients blocked by a shortage); safety-threshold breaches (wait > 30 min by default); bottlenecks (patient-minutes of waiting attributed to the *binding* shortage — the one that clears last; ties go to the scarcer resource).
 
 ## Scheduling strategies
 
-1. **First-Come, First-Served** – arrival order. Fair by arrival, but urgent patients can wait behind minor cases.
-2. **Urgency Only** – highest urgency first, ties by arrival. Protects critical cases but can starve low-urgency patients.
-3. **Dynamic Priority** – highest S_i(T) first. Waiting time slowly lifts low-urgency patients.
+Every strategy uses the same patients, arrival times, treatment durations, resources, allocation and release logic; only the patient-selection order differs. Ties fall through to arrival time and then patient id (plain code-point comparison), so output is reproducible.
 
-Note: with the default weights, waiting has to differ by roughly 27 minutes per urgency level before Dynamic Priority outranks Urgency Only, so on short or lightly loaded runs the two can give identical results. Raise β under *Advanced* to see them diverge.
+1. **First-Come, First-Served** – the normal baseline. Order: arrival time ↑, patient id ↑. Urgency and waiting time are ignored.
+2. **Urgency Only** – order: urgency ↓, arrival ↑, id ↑. Protects critical cases but can starve low-urgency patients; waiting time is ignored.
+3. **Dynamic Priority** – the efficient policy. Order: S_i(T) ↓, urgency ↓, arrival ↑, id ↑, where `S = 5.0·urgency + 0.35·waitingTime + 2.0·deteriorationRisk + 3.0·emergencyFlag`. The waiting-time term lets a low-urgency patient overtake newer, more urgent arrivals once they have waited long enough, so nobody is starved. The score is stored for every patient and shown in the decision explanation.
+
+Note: with the default weights, waiting has to differ by roughly 57 minutes (20 ÷ 0.35) before a urgency-1 patient outranks a fresh urgency-5 arrival, so on short or lightly loaded runs Dynamic Priority and Urgency Only can produce the same order; the app then says "These strategies produced the same order for this scenario." Use the contrast scenario to see the strategies diverge.
+
+### Normal vs efficient, and the objective score
+
+*Normal* = First-Come, First-Served; *efficient* = Dynamic Priority. Each is a full, independent simulation of a deep copy of the same patients and resources. Every table value comes from those two runs. The lower objective score is better:
+
+```
+objectiveScore = 1.0·totalWaitingTime + 4.0·criticalPatientWaitingTime
+               + 10000·patientsRemaining + 10000·resourceOverload + 0.5·maximumWaitingTime
+```
+
+Percentage improvement: lower-is-better `(normal − efficient) ÷ max(|normal|, 0.0001) × 100`; higher-is-better `(efficient − normal) ÷ max(|normal|, 0.0001) × 100`. The winner is labelled "Best system within the tested scheduling policies" — it is the best of the policies tried, not a proven global optimum. *Best tested configuration* likewise means the best of five one-unit additions (doctor, nurse, general bed, ICU bed, operating room), each fully re-simulated.
 
 ## Architecture
 
@@ -72,7 +92,7 @@ app/                 Next.js routes: / , /patients , /resources , /simulation , 
 components/          UI only (forms, tables, cards, charts, hospital view)
 lib/
   simulation/        Pure, testable engine — no React, no database
-    types.ts  policies.ts (score + strategies)  engine.ts  metrics.ts
+    types.ts  policies.ts (score + strategies)  engine.ts  metrics.ts  efficiency.ts (normal vs efficient)
     surge.ts  compare.ts  placeholder.ts  index.ts
   database.ts        Database interface + Supabase and browser-storage adapters
   supabase.ts        Browser client (refuses secret keys)
@@ -148,11 +168,13 @@ Production check: `npm run build && npm start`. Type-check: `npm run typecheck`.
 npm test
 ```
 
-57 tests cover: patient validation, duplicate detection, capacity constraints (including randomized scenarios checked against an independent replay), resource release, all three policies, waiting-time and utilization calculations, empty patient list, no resources, emergency surge, resource failure, input rejection (negative resources, invalid urgency), strategy-comparison fairness, persistence across a simulated refresh, and the demo scenario.
+91 tests cover: patient validation, duplicate detection, capacity constraints (including randomized scenarios checked against an independent replay), resource release, all three policies, waiting-time and utilization calculations, empty patient list, no resources, emergency surge, resource failure, input rejection (negative resources, invalid urgency), strategy-comparison fairness, persistence across a simulated refresh, and the demo scenario. `tests/scheduling.test.ts` adds the selection rules of each policy, starvation prevention, bottleneck continuation, completion beyond the planned duration, the completion guarantee and explicit errors, the normal-vs-efficient comparison, the contrast scenario, determinism, and a check that the simulation sources make no network calls and contain no AI code.
+
+There are no browser (end-to-end) tests in this repository.
 
 ## AI tools used
 
-Built with Claude Code (Anthropic Claude). Scheduling scores are computed by the deterministic engine in `lib/simulation/` — no AI model is called at runtime and none produces the priority scores or explanations.
+Built with Claude Code (Anthropic Claude). Scheduling scores are computed by the deterministic engine in `lib/simulation/` — no AI model is called at runtime and none produces the priority scores, the simulation, the comparison or the explanations.
 
 ## Animation library used
 

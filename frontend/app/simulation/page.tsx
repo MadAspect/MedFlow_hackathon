@@ -2,6 +2,7 @@
 
 import { HospitalView, WarningsList } from "@/components/HospitalView";
 import { MetricsCards } from "@/components/MetricsCards";
+import { NormalVsEfficient } from "@/components/NormalVsEfficient";
 import { ResultsCharts } from "@/components/ResultsCharts";
 import { SimulationControls } from "@/components/SimulationControls";
 import { StrategyComparison } from "@/components/StrategyComparison";
@@ -27,7 +28,7 @@ export default function SimulationPage() {
         </h2>
         {output && (
           <p className="text-sm text-slate-600">
-            {STRATEGY_LABELS[output.strategy]} · {output.params.duration} min
+            {STRATEGY_LABELS[output.strategy]} · planned duration {output.metrics.configured_duration} min · actual completion {output.metrics.actual_completion_time} min
             {output.params.emergencySurge ? ` · surge from minute ${output.params.surgeStart}` : ""}
             {output.params.resourceFailure ? ` · ${output.params.failedResource.replace("_", " ")} failure at minute ${output.params.failureStart}` : ""}
             {current?.createdAt ? ` · run at ${new Date(current.createdAt).toLocaleString()}` : ""}
@@ -56,10 +57,11 @@ export default function SimulationPage() {
         <ResultsCharts output={output} />
       </section>
 
-      <section aria-labelledby="lab-heading" className="space-y-3">
+      <section aria-labelledby="lab-heading" className="space-y-6">
         <h2 id="lab-heading" className="sr-only">
           Strategy comparison
         </h2>
+        <NormalVsEfficient />
         <StrategyComparison />
       </section>
     </div>

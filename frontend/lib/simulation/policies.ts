@@ -6,12 +6,15 @@ import type {
   Weights,
 } from "./types";
 
-/** Transparent default weights for the dynamic priority score. */
+/**
+ * Transparent default weights for the dynamic priority score:
+ *   priorityScore = 5.0·urgency + 0.35·waitingTime + 2.0·deteriorationRisk + 3.0·emergencyFlag
+ */
 export const DEFAULT_WEIGHTS: Weights = {
-  alpha: 4.0,
-  beta: 0.15,
-  gamma: 3.0,
-  delta: 2.0,
+  alpha: 5.0,
+  beta: 0.35,
+  gamma: 2.0,
+  delta: 3.0,
 };
 
 /** Minutes for the deterioration-risk curve to reach ~63% of its ceiling. */
@@ -78,13 +81,19 @@ export interface RankedCandidate {
   score: ScoreBreakdown;
 }
 
+/** Plain code-point comparison: independent of locale, so runs are identical everywhere. */
+const compareIds = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
 const byArrivalThenId = (a: SimPatient, b: SimPatient) =>
-  a.arrival_time - b.arrival_time || a.id.localeCompare(b.id);
+  a.arrival_time - b.arrival_time || compareIds(a.id, b.id);
 
 /**
  * Comparator for a scheduling policy: negative means `a` is treated before `b`.
- * Every policy is deterministic (ties fall back to arrival time, then id) so
- * the strategy comparison is reproducible.
+ * Only the selection rule differs between policies:
+ *   fcfs     arrival ↑, id ↑                       (urgency and waiting are ignored)
+ *   urgency  urgency ↓, arrival ↑, id ↑            (waiting time is ignored)
+ *   dynamic  score ↓, urgency ↓, arrival ↑, id ↑
+ * Ties always fall through to arrival time, then patient id, so runs are reproducible.
  */
 export function compareCandidates(
   strategy: Strategy,

@@ -14,10 +14,20 @@ import {
   connectDatabase,
   resourcesFromRow,
   type Database,
+  type NewPatient,
   type PatientRow,
   type StoredRun,
 } from "./database";
-import { DEMO_PARAMS, DEMO_PATIENTS, DEMO_RESOURCES, EXAMPLE_PATIENTS } from "./demo";
+import {
+  CONTRAST_MESSAGE,
+  CONTRAST_PARAMS,
+  CONTRAST_PATIENTS,
+  CONTRAST_RESOURCES,
+  DEMO_PARAMS,
+  DEMO_PATIENTS,
+  DEMO_RESOURCES,
+  EXAMPLE_PATIENTS,
+} from "./demo";
 import {
   RunPreconditionError,
   executeRun,
@@ -75,6 +85,8 @@ interface Store {
   resetRun: () => Promise<void>;
   openRun: (id: string) => Promise<boolean>;
   runDemo: () => Promise<boolean>;
+  /** Load the deterministic contrast scenario and simulate it. */
+  runContrast: () => Promise<boolean>;
 }
 
 const StoreContext = createContext<Store | null>(null);
@@ -85,7 +97,8 @@ export function useStore(): Store {
   return store;
 }
 
-const PARAMS_KEY = "medflow.params";
+// v2: the default Dynamic Priority weights changed, so settings saved by v1 are not reused.
+const PARAMS_KEY = "medflow.params.v2";
 
 function defaultViewTime(output: SimulationOutput): number {
   return output.metrics.peak_queue_length > 0
@@ -201,6 +214,38 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  /** Replace patients and resources with a scenario, run it and show the result. */
+  async function loadScenario(scenario: {
+    patients: NewPatient[];
+    resources: ResourceSet;
+    params: Partial<SimParams>;
+    success: string;
+    failure: string;
+  }): Promise<boolean> {
+    setRunning(true);
+    try {
+      const scenarioParams = defaultParams(scenario.params);
+      await db().clearPatients();
+      await db().insertPatients(scenario.patients);
+      const row = await db().saveResources(scenario.resources);
+      setResources(resourcesFromRow(row));
+      setResourcesSaved(true);
+      setParams(scenarioParams);
+      const result = await executeRun(db(), scenarioParams);
+      setPatients(result.patients);
+      await refreshRuns();
+      showRun({ output: result.output, runId: result.stored.run.id, createdAt: result.stored.run.created_at });
+      if (result.output.completed) notify("success", scenario.success);
+      else notify("error", `Simulation error — not all patients were treated. ${result.output.error ?? ""}`.trim());
+      return true;
+    } catch (err) {
+      notify("error", `${scenario.failure}: ${errorMessage(err)}`);
+      return false;
+    } finally {
+      setRunning(false);
+    }
+  }
+
   const store: Store = {
     ready,
     connection,
@@ -290,12 +335,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         setPatients(result.patients);
         await refreshRuns();
         showRun({ output: result.output, runId: result.stored.run.id, createdAt: result.stored.run.created_at });
-        notify(
-          result.output.isPlaceholder ? "info" : "success",
-          result.output.isPlaceholder
-            ? "Placeholder simulation output saved — not a calculated result."
-            : `Simulation complete: ${result.output.metrics.patients_treated} of ${result.output.metrics.total_patients} patients treated.`,
-        );
+        if (result.output.isPlaceholder) {
+          notify("info", "Placeholder simulation output saved — not a calculated result.");
+        } else if (result.output.completed) {
+          notify(
+            "success",
+            `Simulation completed: all ${result.output.metrics.total_patients} patients treated by minute ${result.output.metrics.actual_completion_time}.`,
+          );
+        } else {
+          notify("error", `Simulation error — not all patients were treated. ${result.output.error ?? ""}`.trim());
+        }
         return true;
       } catch (err) {
         const known =
@@ -328,29 +377,23 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         return true;
       }, false),
 
-    runDemo: async () => {
-      setRunning(true);
-      try {
-        const demoParams = defaultParams(DEMO_PARAMS);
-        await db().clearPatients();
-        await db().insertPatients(DEMO_PATIENTS);
-        const row = await db().saveResources(DEMO_RESOURCES);
-        setResources(resourcesFromRow(row));
-        setResourcesSaved(true);
-        setParams(demoParams);
-        const result = await executeRun(db(), demoParams);
-        setPatients(result.patients);
-        await refreshRuns();
-        showRun({ output: result.output, runId: result.stored.run.id, createdAt: result.stored.run.created_at });
-        notify("success", "Demo scenario loaded and simulated.");
-        return true;
-      } catch (err) {
-        notify("error", `Demo failed: ${errorMessage(err)}`);
-        return false;
-      } finally {
-        setRunning(false);
-      }
-    },
+    runDemo: () =>
+      loadScenario({
+        patients: DEMO_PATIENTS,
+        resources: DEMO_RESOURCES,
+        params: DEMO_PARAMS,
+        success: "Demo scenario loaded and simulated.",
+        failure: "Demo failed",
+      }),
+
+    runContrast: () =>
+      loadScenario({
+        patients: CONTRAST_PATIENTS,
+        resources: CONTRAST_RESOURCES,
+        params: CONTRAST_PARAMS,
+        success: `Contrast scenario loaded and simulated. ${CONTRAST_MESSAGE}`,
+        failure: "Contrast scenario failed",
+      }),
   };
 
   return <StoreContext.Provider value={store}>{children}</StoreContext.Provider>;

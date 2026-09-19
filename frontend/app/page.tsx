@@ -13,7 +13,7 @@ import { STRATEGY_LABELS, emptyResourceSet } from "@/lib/simulation";
 export default function ControlRoomPage() {
   const { patients, resources, resourcesSaved, runs, current, viewTime, runDemo, running } = useStore();
 
-  const t = current ? Math.min(viewTime, current.output.params.duration) : 0;
+  const t = current ? Math.min(viewTime, Math.max(0, current.output.timeline.length - 1)) : 0;
   const point = current?.output.timeline[t];
   const steps = [
     { done: patients.length > 0, label: "Add or load patients", detail: `${patients.length} stored`, href: "/patients" },
@@ -85,7 +85,7 @@ export default function ControlRoomPage() {
         {current && point ? (
           <>
             <p className="mb-2 text-xs text-slate-600">
-              Latest run: {STRATEGY_LABELS[current.output.strategy]}, showing minute {t} of {current.output.params.duration}. Scrub through time on the Simulation page.
+              Latest run: {STRATEGY_LABELS[current.output.strategy]}, showing minute {t} of {Math.max(0, current.output.timeline.length - 1)} (actual completion: minute {current.output.metrics.actual_completion_time}). Scrub through time on the Simulation page.
             </p>
             <ResourceCards total={point.capacity} inUse={point.in_use} />
           </>

@@ -30,6 +30,36 @@ export function utilization(
   return Math.min(1, usedUnitMinutes / (capacity * duration));
 }
 
+/** Weights of the objective score. The lower the score, the better the run. */
+export const OBJECTIVE_WEIGHTS = {
+  totalWaiting: 1.0,
+  criticalWaiting: 4.0,
+  patientsRemaining: 10000.0,
+  resourceOverload: 10000.0,
+  maxWaiting: 0.5,
+} as const;
+
+/**
+ *   objective = 1·totalWaitingTime + 4·criticalPatientWaitingTime
+ *             + 10000·patientsRemaining + 10000·resourceOverload
+ *             + 0.5·maximumWaitingTime
+ */
+export function objectiveScore(m: {
+  total_waiting_time: number;
+  critical_wait_total: number;
+  patients_remaining: number;
+  resource_overload: number;
+  maximum_wait: number;
+}): number {
+  return (
+    OBJECTIVE_WEIGHTS.totalWaiting * m.total_waiting_time +
+    OBJECTIVE_WEIGHTS.criticalWaiting * m.critical_wait_total +
+    OBJECTIVE_WEIGHTS.patientsRemaining * m.patients_remaining +
+    OBJECTIVE_WEIGHTS.resourceOverload * m.resource_overload +
+    OBJECTIVE_WEIGHTS.maxWaiting * m.maximum_wait
+  );
+}
+
 export interface MetricsInput {
   outcomes: PatientOutcome[];
   timeline: TimelinePoint[];
@@ -37,8 +67,12 @@ export interface MetricsInput {
   params: SimParams;
   /** Patient-minutes of queueing attributed to each resource as the binding shortage. */
   blockedPatientMinutes: ResourceSet;
+  /** Distinct patients whose binding shortage was each resource. */
+  blockedPatientCounts?: ResourceSet;
   /** Distinct patients blocked at least once by a resource shortage. */
   resourceConflicts: number;
+  /** Minute the last treatment finished; defaults to the latest recorded end time. */
+  actualCompletionTime?: number;
 }
 
 export function computeMetrics(input: MetricsInput): Metrics {
@@ -46,16 +80,24 @@ export function computeMetrics(input: MetricsInput): Metrics {
   const arrived = outcomes.filter((o) => o.status !== "not_arrived");
   const critical = arrived.filter((o) => o.urgency >= params.criticalUrgency);
   const treated = outcomes.filter((o) => o.status === "treated");
+  const actualCompletionTime =
+    input.actualCompletionTime ?? outcomes.reduce((m, o) => Math.max(m, o.end_time ?? 0), 0);
 
-  // Only minutes [0, duration) count towards utilization.
+  // Utilization covers the observation window [0, horizon): the configured
+  // duration, extended to the actual completion time when the run is longer.
+  const horizon = Math.max(params.duration, actualCompletionTime);
   const used = emptyResourceSet();
+  let overload = 0;
   for (const point of timeline) {
-    if (point.t >= params.duration) continue;
-    for (const k of RESOURCE_KEYS) used[k] += point.in_use[k];
+    if (point.t >= horizon) continue;
+    for (const k of RESOURCE_KEYS) {
+      used[k] += point.in_use[k];
+      overload += Math.max(0, point.in_use[k] - resources[k]);
+    }
   }
   const resource_utilization = emptyResourceSet();
   for (const k of RESOURCE_KEYS) {
-    resource_utilization[k] = utilization(used[k], resources[k], params.duration);
+    resource_utilization[k] = utilization(used[k], resources[k], horizon);
   }
 
   let peak = 0;
@@ -71,21 +113,39 @@ export function computeMetrics(input: MetricsInput): Metrics {
   const bottlenecks = RESOURCE_KEYS.map((resource) => ({
     resource,
     blocked_patient_minutes: input.blockedPatientMinutes[resource],
+    blocked_patients: input.blockedPatientCounts?.[resource] ?? 0,
   }))
     .filter((b) => b.blocked_patient_minutes > 0)
     .sort((a, b) => b.blocked_patient_minutes - a.blocked_patient_minutes);
+
+  const total_waiting_time = arrived.reduce((s, o) => s + o.wait_time, 0);
+  const critical_wait_total = critical.reduce((s, o) => s + o.wait_time, 0);
+  const maximum_wait = arrived.reduce((m, o) => Math.max(m, o.wait_time), 0);
+  const patients_remaining = outcomes.length - treated.length;
 
   return {
     total_patients: outcomes.length,
     patients_arrived: arrived.length,
     patients_treated: treated.length,
     average_wait: average(arrived.map((o) => o.wait_time)),
-    maximum_wait: arrived.reduce((m, o) => Math.max(m, o.wait_time), 0),
+    maximum_wait,
     critical_wait: average(critical.map((o) => o.wait_time)),
+    configured_duration: params.duration,
+    actual_completion_time: actualCompletionTime,
+    total_waiting_time,
+    critical_wait_total,
+    resource_overload: overload,
+    objective_score: objectiveScore({
+      total_waiting_time,
+      critical_wait_total,
+      patients_remaining,
+      resource_overload: overload,
+      maximum_wait,
+    }),
     queue_length_final: last ? last.queue_length : 0,
     peak_queue_length: peak,
     peak_queue_time: peakTime,
-    patients_remaining: outcomes.length - treated.length,
+    patients_remaining,
     resource_utilization,
     resource_conflicts: input.resourceConflicts,
     safety_threshold_breaches: arrived.filter(
@@ -102,12 +162,30 @@ export interface WarningInput {
   resources: ResourceSet;
   params: SimParams;
   surgeAdded: number;
+  /** Set when the run could not treat every patient. */
+  error?: string | null;
 }
 
 /** Human-readable warnings and bottlenecks derived from calculated output. */
 export function buildWarnings(input: WarningInput): SimWarning[] {
   const { outcomes, timeline, metrics, resources, params } = input;
   const warnings: SimWarning[] = [];
+
+  if (input.error) {
+    warnings.push({
+      level: "critical",
+      code: "simulation_incomplete",
+      time: metrics.actual_completion_time,
+      message: input.error,
+    });
+  } else if (outcomes.length > 0 && metrics.actual_completion_time > params.duration) {
+    warnings.push({
+      level: "info",
+      code: "beyond_duration",
+      time: metrics.actual_completion_time,
+      message: `The planned observation period was ${params.duration} min, but patients were still waiting or in treatment, so the simulation continued until minute ${metrics.actual_completion_time}, when the last patient was treated.`,
+    });
+  }
 
   if (outcomes.length === 0) {
     warnings.push({
@@ -182,7 +260,6 @@ export function buildWarnings(input: WarningInput): SimWarning[] {
     let saturatedMinutes = 0;
     let firstSaturated: number | null = null;
     for (const p of timeline) {
-      if (p.t >= params.duration) continue;
       const cap = p.capacity[k];
       const saturated = cap > 0 ? p.in_use[k] / cap >= 0.9 : resources[k] > 0;
       if (saturated) {

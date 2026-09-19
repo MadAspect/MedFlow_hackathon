@@ -8,7 +8,7 @@ import { RESOURCE_KEYS, emptyResourceSet, resourceStatus, totalUnits } from "@/l
 
 export default function ResourcesPage() {
   const { resources, current, viewTime } = useStore();
-  const t = current ? Math.min(viewTime, current.output.params.duration) : 0;
+  const t = current ? Math.min(viewTime, Math.max(0, current.output.timeline.length - 1)) : 0;
   const point = current?.output.timeline[t];
   const total = point?.capacity ?? resources;
   const inUse = point?.in_use ?? emptyResourceSet();
