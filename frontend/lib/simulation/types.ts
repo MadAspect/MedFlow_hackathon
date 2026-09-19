@@ -67,6 +67,15 @@ export interface SimParams {
   safetyThreshold: number;
   /** Urgency at or above this counts as a critical patient. */
   criticalUrgency: number;
+  /**
+   * Protect blocked critical patients (reservation backfilling). When the top-ranked
+   * patient is critical, an emergency or already past the safety limit and cannot
+   * start yet, the earliest time they can start is reserved for them, and
+   * lower-ranked patients only jump ahead if that cannot delay it. Stops a critical
+   * patient who needs several resources from being starved by a stream of small
+   * cases, at the cost of some idle capacity. Off by default.
+   */
+  reservation?: boolean;
 }
 
 export interface ScoreBreakdown {

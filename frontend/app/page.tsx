@@ -5,10 +5,10 @@ import Link from "next/link";
 import { MetricsCards } from "@/components/MetricsCards";
 import { ResourceCards } from "@/components/ResourceCards";
 import { WarningsList } from "@/components/HospitalView";
-import { Button, Card, Notice, PageHeader } from "@/components/ui";
+import { Button, Card, EcgLine, PageHeader, fmt1 } from "@/components/ui";
 import { useStore } from "@/lib/store";
 import { DEMO_RESOURCES } from "@/lib/demo";
-import { STRATEGY_LABELS, emptyResourceSet } from "@/lib/simulation";
+import { RESOURCE_LABELS, STRATEGY_LABELS, emptyResourceSet } from "@/lib/simulation";
 
 export default function ControlRoomPage() {
   const { patients, resources, resourcesSaved, runs, current, viewTime, runDemo, running } = useStore();
@@ -19,7 +19,7 @@ export default function ControlRoomPage() {
     { done: patients.length > 0, label: "Add or load patients", detail: `${patients.length} stored`, href: "/patients" },
     { done: resourcesSaved, label: "Configure hospital resources", detail: resourcesSaved ? "Saved" : "Not saved yet", href: "/resources" },
     { done: runs.length > 0, label: "Run a simulation", detail: `${runs.length} run${runs.length === 1 ? "" : "s"} saved`, href: "/simulation" },
-    { done: runs.length > 0, label: "Compare strategies", detail: "Strategy Lab", href: "/simulation" },
+    { done: runs.length > 0, label: "Compare strategies", detail: "Recommendation and advice", href: "/simulation#compare" },
   ];
 
   return (
@@ -29,9 +29,36 @@ export default function ControlRoomPage() {
         description="Given the current patient queue and available doctors, nurses, beds, ICU beds and operating rooms, which patient should be treated next — and how does the hospital perform under different scheduling strategies?"
       />
 
-      <Notice tone="blue">
-        <strong>Hospital operations simulation and decision-support prototype.</strong> Synthetic patient data only — not a clinical system and not medical advice.
-      </Notice>
+      <section
+        aria-label="Prototype notice and latest headline numbers"
+        className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-blue-900 via-blue-800 to-blue-700 p-5 text-white shadow-lg shadow-blue-800/20"
+      >
+        <div aria-hidden className="pointer-events-none absolute -top-16 -right-10 h-56 w-56 rounded-full bg-sky-400/30 blur-3xl" />
+        <EcgLine className="pointer-events-none absolute inset-x-0 bottom-2 h-12 w-full text-sky-200/50" />
+        <div className="relative">
+          <p className="max-w-3xl text-sm text-sky-50">
+            <strong className="font-semibold text-white">Hospital operations simulation and decision-support prototype.</strong> Synthetic patient data only — not a
+            clinical system and not medical advice.
+          </p>
+          {current && !current.output.isPlaceholder ? (
+            <dl className="stagger mt-4 grid grid-cols-2 gap-3 pb-6 sm:grid-cols-4">
+              {[
+                ["Treated", `${current.output.metrics.patients_treated}/${current.output.metrics.total_patients}`],
+                ["Average wait", `${fmt1(current.output.metrics.average_wait)} min`],
+                ["Critical wait", `${fmt1(current.output.metrics.critical_wait)} min`],
+                ["Bottleneck", current.output.metrics.bottlenecks[0] ? RESOURCE_LABELS[current.output.metrics.bottlenecks[0].resource] : "None"],
+              ].map(([label, value], i) => (
+                <div key={label} style={{ ["--i" as string]: i }} className="rounded-xl border border-white/15 bg-white/10 px-3 py-2 backdrop-blur-sm">
+                  <dt className="text-xs text-sky-100">{label}</dt>
+                  <dd className="text-xl font-bold tabular-nums">{value}</dd>
+                </div>
+              ))}
+            </dl>
+          ) : (
+            <p className="mt-3 pb-6 text-sm text-sky-100">Run the demo below to see live numbers here.</p>
+          )}
+        </div>
+      </section>
 
       <div className="grid gap-4 lg:grid-cols-3">
         <Card title="One-click demo" description="Loads a tight, synthetic scenario and runs it." className="lg:col-span-1">

@@ -31,7 +31,8 @@ export function Button({
   variant?: "primary" | "secondary" | "danger" | "ghost";
 }) {
   const styles = {
-    primary: "bg-blue-700 text-white hover:bg-blue-800 border-blue-700",
+    primary:
+      "bg-gradient-to-b from-blue-600 to-blue-700 text-white shadow-sm shadow-blue-900/25 hover:from-blue-600 hover:to-blue-800 border-blue-700 active:translate-y-px",
     secondary: "bg-white text-slate-800 hover:bg-slate-50 border-slate-300",
     danger: "bg-white text-red-700 hover:bg-red-50 border-red-300",
     ghost: "bg-transparent text-slate-700 hover:bg-slate-100 border-transparent",
@@ -65,7 +66,7 @@ export function Card({
   className?: string;
 }) {
   return (
-    <section className={cx("min-w-0 rounded-lg border border-slate-200 bg-white shadow-sm", className)}>
+    <section className={cx("min-w-0 rounded-xl border border-slate-200/80 bg-white/90 shadow-sm shadow-slate-900/5 backdrop-blur-sm", className)}>
       {(title || actions) && (
         <header className="flex flex-wrap items-start justify-between gap-2 border-b border-slate-100 px-4 py-3">
           <div>
@@ -202,6 +203,7 @@ export function PageHeader({ title, description, actions }: { title: string; des
   return (
     <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
       <div>
+        <span aria-hidden className="mb-2 block h-1 w-10 rounded-full bg-gradient-to-r from-blue-600 to-sky-400" />
         <h1 className="text-2xl font-bold tracking-tight text-slate-900">{title}</h1>
         {description && <p className="mt-1 max-w-3xl text-sm text-slate-600">{description}</p>}
       </div>
@@ -225,6 +227,24 @@ export function LoadingBlock() {
       <div className="h-32 rounded bg-slate-200" />
       <div className="h-32 rounded bg-slate-200" />
     </div>
+  );
+}
+
+/** Decorative heartbeat trace. `animated` redraws it forever; it is hidden from assistive tech. */
+export function EcgLine({ className, animated = true }: { className?: string; animated?: boolean }) {
+  return (
+    <svg viewBox="0 0 160 40" fill="none" aria-hidden className={className} preserveAspectRatio="none">
+      <path
+        d="M0 22 H34 L40 22 L46 8 L54 34 L60 22 H92 L98 22 L104 12 L110 30 L114 22 H160"
+        pathLength={1}
+        stroke="currentColor"
+        strokeWidth={2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        vectorEffect="non-scaling-stroke"
+        className={animated ? "ecg-line" : undefined}
+      />
+    </svg>
   );
 }
 

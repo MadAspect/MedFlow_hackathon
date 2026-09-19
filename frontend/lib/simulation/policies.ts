@@ -26,8 +26,12 @@ export const STRATEGY_LABELS: Record<Strategy, string> = {
   dynamic: "Dynamic Priority",
 };
 
+/** Shown on the Simulation page next to the strategy choice. */
+export const FCFS_NOTE =
+  "First-Come, First-Served is the most common and basic approach: whoever arrives first is treated first. It is the baseline the other two strategies are compared against.";
+
 export const STRATEGY_DESCRIPTIONS: Record<Strategy, string> = {
-  fcfs: "Treats patients strictly in arrival order. Fair by arrival, but urgent patients can wait behind minor cases.",
+  fcfs: "Treats patients strictly in arrival order. Simple and fair by arrival, but urgent patients can wait behind minor cases.",
   urgency:
     "Always treats the most urgent patient first (ties by arrival). Protects critical cases but can starve low-urgency patients.",
   dynamic:

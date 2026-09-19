@@ -4,10 +4,13 @@
  * Light, high-contrast operations-dashboard theme.
  * Colour meaning: blue = information, green = available/safe,
  * yellow = warning, red = critical, grey = inactive.
+ * Decoration (gradients, glow, ECG line) is kept faint so data stays the focus.
  */
 :root {
-  --background: #f8fafc;
+  --background: #f4f7fb;
   --foreground: #0f172a;
+  --brand: #1d4ed8;
+  --brand-soft: #38bdf8;
 }
 
 @theme inline {
@@ -17,12 +20,24 @@
   --animate-fade: fade-in 0.25s ease-out;
   --animate-pop: pop 0.35s ease-out;
   --animate-warn: warn-pulse 1.6s ease-in-out infinite;
+  --animate-rise: rise 0.45s cubic-bezier(0.2, 0.7, 0.2, 1) both;
 }
 
 body {
-  background: var(--background);
+  background-color: var(--background);
+  /* two soft colour washes + a faint dot grid, fixed so they do not scroll */
+  background-image:
+    radial-gradient(48rem 24rem at 92% -8%, rgb(56 189 248 / 0.2), transparent 62%),
+    radial-gradient(42rem 24rem at -8% 2%, rgb(37 99 235 / 0.13), transparent 58%),
+    radial-gradient(rgb(15 23 42 / 0.055) 1px, transparent 1px);
+  background-size: auto, auto, 22px 22px;
+  background-attachment: fixed;
   color: var(--foreground);
   font-family: var(--font-sans);
+}
+
+::selection {
+  background: rgb(56 189 248 / 0.3);
 }
 
 @keyframes fade-in {
@@ -47,6 +62,17 @@ body {
   }
 }
 
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 /* Subtle pulse used only for critical bottlenecks. */
 @keyframes warn-pulse {
   0%,
@@ -58,6 +84,96 @@ body {
   }
 }
 
+/* A heartbeat trace that keeps drawing itself (pathLength is normalised to 1). */
+@keyframes ecg-draw {
+  0% {
+    stroke-dashoffset: 1;
+  }
+  55%,
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes ecg-fade {
+  0%,
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.25;
+  }
+}
+
+.ecg-line {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation:
+    ecg-draw 2.8s ease-in-out infinite,
+    ecg-fade 2.8s ease-in-out infinite;
+}
+
+/* Playhead glow for the patient timeline. */
+@keyframes playhead {
+  0%,
+  100% {
+    opacity: 0.85;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.playhead {
+  animation: playhead 1.6s ease-in-out infinite;
+}
+
+/* Header: frosted glass that stays put while the page scrolls. */
+.glass {
+  background: rgb(255 255 255 / 0.78);
+  -webkit-backdrop-filter: saturate(1.6) blur(12px);
+  backdrop-filter: saturate(1.6) blur(12px);
+}
+
+/* Surfaces lift a touch on hover; only used on cards that are informational. */
+.lift {
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease,
+    border-color 0.2s ease;
+}
+.lift:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 24px -12px rgb(15 23 42 / 0.25);
+}
+
+/* Children fade up one after another: set --i on each child. */
+.stagger > * {
+  animation: rise 0.45s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  animation-delay: calc(var(--i, 0) * 45ms);
+}
+
+/* Slow sheen across a filled bar, so a busy resource looks alive. */
+@keyframes sheen {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+.sheen {
+  position: relative;
+  overflow: hidden;
+}
+.sheen::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.45), transparent);
+  animation: sheen 2.4s ease-in-out infinite;
+}
+
 /* The app is fully usable without animation. */
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -65,5 +181,8 @@ body {
   *::after {
     animation: none !important;
     transition: none !important;
+  }
+  .ecg-line {
+    stroke-dashoffset: 0;
   }
 }

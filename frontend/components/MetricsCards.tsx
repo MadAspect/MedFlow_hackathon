@@ -1,6 +1,22 @@
 "use client";
 
+import { Activity, BedDouble, Clock, Gauge, HeartPulse, Hourglass, Siren, Stethoscope, Timer, Users, type LucideIcon } from "lucide-react";
 import { Badge, EmptyState, cx, fmt1, pct0 } from "./ui";
+
+const KPI_ICONS: Record<string, LucideIcon> = {
+  "Patients treated": Users,
+  "Actual completion time": Clock,
+  "Average waiting time": Timer,
+  "Maximum waiting time": Hourglass,
+  "Critical-patient waiting": HeartPulse,
+  "Doctor utilization": Stethoscope,
+  "Nurse utilization": Stethoscope,
+  "Bed utilization": BedDouble,
+  "ICU utilization": BedDouble,
+  "Operating-room utilization": Activity,
+  "Bottleneck resource": Gauge,
+  "Patients still waiting": Siren,
+};
 import { PLACEHOLDER_NOTICE, RESOURCE_LABELS, statusCounts, type SimulationOutput } from "@/lib/simulation";
 
 export function CompletionBadge({ output }: { output: SimulationOutput }) {
@@ -66,11 +82,24 @@ export function MetricsCards({ output }: { output: SimulationOutput | null }) {
           {!output.completed && output.error && <span className="text-red-800">{output.error}</span>}
         </p>
       )}
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-        {kpisFor(output).map((k) => (
-          <div key={k.label} className={cx("rounded-lg border bg-white p-3 shadow-sm", k.alert ? "border-amber-400" : "border-slate-200")}>
+      <div className="stagger grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        {kpisFor(output).map((k, i) => {
+          const Icon = KPI_ICONS[k.label] ?? Activity;
+          return (
+          <div
+            key={k.label}
+            style={{ ["--i" as string]: i }}
+            className={cx(
+              "lift relative overflow-hidden rounded-xl border bg-white/90 p-3 pl-4 shadow-sm shadow-slate-900/5",
+              k.alert ? "border-amber-400" : "border-slate-200/80",
+            )}
+          >
+            <span aria-hidden className={cx("absolute inset-y-0 left-0 w-1", k.alert ? "bg-amber-500" : "bg-gradient-to-b from-blue-600 to-sky-400")} />
             <p className="flex items-center justify-between gap-1 text-xs font-medium text-slate-600">
-              {k.label}
+              <span className="flex items-center gap-1.5">
+                <Icon size={14} aria-hidden className={k.alert ? "text-amber-600" : "text-blue-600"} />
+                {k.label}
+              </span>
               {output.isPlaceholder && <Badge tone="yellow">Placeholder</Badge>}
             </p>
             {/* key forces a short "pop" animation whenever the value changes */}
@@ -79,7 +108,8 @@ export function MetricsCards({ output }: { output: SimulationOutput | null }) {
             </p>
             {k.sub && <p className="text-xs text-slate-500">{k.sub}</p>}
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

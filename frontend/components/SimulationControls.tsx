@@ -2,10 +2,11 @@
 
 import { FlaskConical, Play, RotateCcw } from "lucide-react";
 import { useState } from "react";
-import { Button, Card, Field, NumberInput, Notice, cx, inputClass } from "./ui";
+import { Badge, Button, Card, Field, NumberInput, Notice, cx, inputClass } from "./ui";
 import { CONTRAST_MESSAGE } from "@/lib/demo";
 import { useStore } from "@/lib/store";
 import {
+  FCFS_NOTE,
   PLACEHOLDER_NOTICE,
   RESOURCE_KEYS,
   RESOURCE_LABELS,
@@ -52,25 +53,51 @@ export function SimulationControls() {
       )}
 
       <fieldset>
-        <legend className="mb-2 text-sm font-medium text-slate-800">Scheduling strategy</legend>
+        <legend className="mb-1 text-sm font-medium text-slate-800">Scheduling strategy</legend>
+        <p className="mb-2 text-sm text-slate-700">{FCFS_NOTE}</p>
         <div className="grid gap-2 md:grid-cols-3">
           {STRATEGIES.map((s) => (
             <label
               key={s}
               className={cx(
                 "flex cursor-pointer gap-2 rounded-md border p-3 text-sm",
-                params.strategy === s ? "border-blue-600 bg-blue-50 ring-1 ring-blue-600" : "border-slate-300 bg-white hover:bg-slate-50",
+                "transition-all",
+                params.strategy === s
+                  ? "border-blue-600 bg-gradient-to-br from-blue-50 to-sky-50 shadow-md shadow-blue-600/10 ring-1 ring-blue-600"
+                  : "border-slate-300 bg-white hover:-translate-y-0.5 hover:border-blue-300 hover:shadow-sm",
               )}
             >
               <input type="radio" name="strategy" checked={params.strategy === s} onChange={() => setParams({ strategy: s })} className="mt-1 accent-blue-700" />
               <span>
-                <span className="block font-semibold text-slate-900">{STRATEGY_LABELS[s]}</span>
+                <span className="flex flex-wrap items-center gap-1.5 font-semibold text-slate-900">
+                  {STRATEGY_LABELS[s]}
+                  {s === "fcfs" && <Badge tone="blue">Most common · baseline</Badge>}
+                </span>
                 <span className="block text-xs text-slate-600">{STRATEGY_DESCRIPTIONS[s]}</span>
               </span>
             </label>
           ))}
         </div>
       </fieldset>
+
+      <label className="mt-3 flex cursor-pointer items-start gap-2 rounded-md border border-slate-200 bg-white/70 p-3 text-sm">
+        <input
+          type="checkbox"
+          checked={params.reservation === true}
+          onChange={(e) => setParams({ reservation: e.target.checked })}
+          className="mt-0.5 h-4 w-4 accent-blue-700"
+        />
+        <span>
+          <span className="flex flex-wrap items-center gap-1.5 font-medium text-slate-900">
+            Protect blocked critical patients <Badge tone="blue">Works with any strategy</Badge>
+          </span>
+          <span className="block text-xs text-slate-600">
+            When the top-ranked patient is critical, an emergency or past the safety limit and is still waiting for resources, the earliest start is reserved for
+            them and nobody may jump ahead if that would delay it. Stops a patient who needs several resources (say two doctors) from being starved by a stream of
+            small cases. Trade-off: some capacity can sit idle, so on generic loads critical waits drop by roughly 8% while average waits rise a little.
+          </span>
+        </span>
+      </label>
 
       <div className="mt-4 grid gap-4 md:grid-cols-3">
         <Field label="Planned duration (min)" htmlFor="duration" error={errors.duration} hint="observation period — the run continues past it until every patient is treated">

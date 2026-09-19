@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { X } from "lucide-react";
 import type { ReactNode } from "react";
-import { Badge, cx, LoadingBlock, Notice } from "./ui";
+import { Badge, cx, EcgLine, LoadingBlock, Notice } from "./ui";
 import { DATA_NOTICE, DISCLAIMER } from "@/lib/constants";
 import { StoreProvider, useStore } from "@/lib/store";
 
@@ -71,15 +71,23 @@ function Frame({ children }: { children: ReactNode }) {
   const { ready, connection } = useStore();
   return (
     <div className="flex min-h-screen flex-col">
-      <header className="border-b border-slate-200 bg-white">
+      <header className="glass sticky top-0 z-40 border-b border-slate-200/80 shadow-sm shadow-slate-900/5">
         <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-x-6 gap-y-2 px-4 py-3">
-          <div>
-            <p className="text-xl font-extrabold tracking-wide text-blue-800">MEDFLOW</p>
-            <p className="text-xs text-slate-600">Hospital Resource Management Simulator</p>
+          <div className="flex items-center gap-3">
+            <span
+              aria-hidden
+              className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-blue-600 to-sky-400 text-white shadow-md shadow-blue-600/30"
+            >
+              <EcgLine className="h-5 w-7" />
+            </span>
+            <div>
+              <p className="bg-gradient-to-r from-blue-800 to-sky-600 bg-clip-text text-xl font-extrabold tracking-wide text-transparent">MEDFLOW</p>
+              <p className="text-xs text-slate-600">Hospital Resource Management Simulator</p>
+            </div>
           </div>
           <StatusBar />
         </div>
-        <nav aria-label="Main" className="mx-auto max-w-7xl overflow-x-auto px-4">
+        <nav aria-label="Main" className="mx-auto max-w-7xl overflow-x-auto px-4 pb-2">
           <ul className="flex gap-1">
             {NAV.map((item) => {
               const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
@@ -89,8 +97,8 @@ function Frame({ children }: { children: ReactNode }) {
                     href={item.href}
                     aria-current={active ? "page" : undefined}
                     className={cx(
-                      "block border-b-2 px-3 py-2 text-sm font-medium whitespace-nowrap",
-                      active ? "border-blue-700 text-blue-800" : "border-transparent text-slate-600 hover:text-slate-900",
+                      "block rounded-full px-3.5 py-1.5 text-sm font-medium whitespace-nowrap transition-colors",
+                      active ? "bg-blue-700 text-white shadow-sm shadow-blue-900/25" : "text-slate-600 hover:bg-slate-100 hover:text-slate-900",
                     )}
                   >
                     {item.label}

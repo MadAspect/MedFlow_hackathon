@@ -18,6 +18,13 @@ import {
 
 export const ENGINE_NAME = "medflow-ts-discrete-v2";
 
+interface Reservation {
+  /** Earliest minute the blocked, top-ranked patient can start. */
+  shadow: number;
+  /** Units still free at that minute after the patient is served. */
+  spare: ResourceSet;
+}
+
 export class SimulationInputError extends Error {
   constructor(message: string) {
     super(message);
@@ -225,6 +232,36 @@ export function runSimulation(
     return binding;
   };
 
+  /**
+   * Reservation for a blocked, top-ranked patient: the `shadow` time they can
+   * start (walking running treatments in end-time order), and the `spare` units
+   * of each resource that are still free at that moment once they are served.
+   * Null when the need can never be met (that is reported by describeStall).
+   */
+  const reserveFor = (need: SimPatient["required_resources"], cap: ResourceSet, now: number): Reservation | null => {
+    const free = emptyResourceSet();
+    for (const k of RESOURCE_KEYS) free[k] = cap[k] - inUse[k];
+    const fits = () => RESOURCE_KEYS.every((k) => free[k] >= (need[k] ?? 0));
+    const releases = running
+      .map((idx) => ({ end: startTime[idx]! + all[idx].treatment_time, idx }))
+      .sort((a, b) => a.end - b.end);
+    let shadow = now;
+    for (let i = 0; i < releases.length && !fits(); i++) {
+      shadow = releases[i].end;
+      // Everything that ends at the same minute frees its units together.
+      while (i < releases.length && releases[i].end === shadow) {
+        for (const k of RESOURCE_KEYS) free[k] += all[releases[i].idx].required_resources[k] ?? 0;
+        i++;
+      }
+      i--;
+    }
+    if (!fits()) return null;
+    const spare = emptyResourceSet();
+    for (const k of RESOURCE_KEYS) spare[k] = free[k] - (need[k] ?? 0);
+    return { shadow, spare };
+  };
+  const useReservation = params.reservation === true;
+
   let t = 0;
   let stopTime = 0;
   let error: string | null = null;
@@ -266,11 +303,33 @@ export function runSimulation(
       );
       const skipped: SkippedCandidate[] = [];
       const startedNow = new Set<number>();
+      // Set by the first ranked patient who cannot start (reservation backfilling).
+      let reserved: Reservation | null = null;
+      let headBlocked = false;
 
       for (const cand of ranked) {
         const need = cand.patient.required_resources;
         const short = shortages(need, cap);
+        if (short.length > 0 && !headBlocked) {
+          headBlocked = true;
+          // Only a head that has earned it holds resources back: critical, an
+          // emergency, or already past the safety limit. Reserving for everyone
+          // just leaves resources idle and raises the average wait.
+          const p = cand.patient;
+          const deserves =
+            p.urgency >= params.criticalUrgency ||
+            p.emergency === true ||
+            t - p.arrival_time > params.safetyThreshold;
+          if (useReservation && deserves) reserved = reserveFor(need, cap, t);
+        }
         if (short.length === 0) {
+          if (reserved) {
+            // May jump the blocked head only if it cannot delay the head's start.
+            const endsInTime = t + cand.patient.treatment_time <= reserved.shadow;
+            const fitsInSpare = RESOURCE_KEYS.every((k) => (need[k] ?? 0) <= reserved!.spare[k]);
+            if (!endsInTime && !fitsInSpare) continue; // stays queued, not resource-blocked
+            if (!endsInTime) for (const k of RESOURCE_KEYS) reserved.spare[k] -= need[k] ?? 0;
+          }
           const availableBefore = emptyResourceSet();
           for (const k of RESOURCE_KEYS) availableBefore[k] = cap[k] - inUse[k];
           decisions[cand.index] = {

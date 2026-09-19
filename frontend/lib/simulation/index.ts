@@ -8,6 +8,7 @@ export * from "./policies";
 export * from "./metrics";
 export * from "./compare";
 export * from "./efficiency";
+export * from "./advice";
 export {
   ENGINE_NAME,
   SimulationInputError,

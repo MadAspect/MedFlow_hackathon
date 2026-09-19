@@ -1,8 +1,9 @@
 "use client";
 
-import { AlertTriangle, ArrowRight, Clock, Info, Siren } from "lucide-react";
-import { useMemo, useState } from "react";
+import { AlertTriangle, ArrowRight, Clock, Info, Pause, Play, Siren } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CompletionBadge } from "./MetricsCards";
+import { PatientTimeline } from "./PatientTimeline";
 import { ResourceCards } from "./ResourceCards";
 import { Badge, Button, Card, EmptyState, cx, fmt1, type Tone } from "./ui";
 import {
@@ -74,6 +75,29 @@ export function HospitalView({
     return columns;
   }, [output, t]);
 
+  // Playback: advance the shared clock a few minutes per tick until the end of the run.
+  const [playing, setPlaying] = useState(false);
+  const [speed, setSpeed] = useState(2);
+  const clock = useRef(t);
+  useEffect(() => {
+    clock.current = t;
+  }, [t]);
+  useEffect(() => {
+    if (!playing) return;
+    const id = window.setInterval(() => {
+      const next = clock.current + speed;
+      if (next >= lastT) {
+        clock.current = lastT;
+        setViewTime(lastT);
+        setPlaying(false);
+      } else {
+        clock.current = next;
+        setViewTime(next);
+      }
+    }, 120);
+    return () => window.clearInterval(id);
+  }, [playing, speed, lastT, setViewTime]);
+
   if (!output || !point) return <EmptyState>No simulation results available. Run a simulation to see the hospital state.</EmptyState>;
 
   const { params } = output;
@@ -142,7 +166,29 @@ export function HospitalView({
           <label htmlFor="view-time" className="text-sm font-medium text-slate-800">
             Hospital state at minute <span className="tabular-nums">{t}</span> of {lastT}
           </label>
-          <input id="view-time" type="range" min={0} max={lastT} value={t} onChange={(e) => setViewTime(Number(e.target.value))} className="min-w-48 flex-1 accent-blue-700" />
+          <Button
+            variant="secondary"
+            aria-label={playing ? "Pause playback" : "Play the run"}
+            onClick={() => {
+              if (playing) return setPlaying(false);
+              if (t >= lastT) setViewTime(0); // replay from the start
+              setPlaying(true);
+            }}
+          >
+            {playing ? <Pause size={15} aria-hidden /> : <Play size={15} aria-hidden />} {playing ? "Pause" : "Play"}
+          </Button>
+          <select
+            aria-label="Playback speed"
+            value={speed}
+            onChange={(e) => setSpeed(Number(e.target.value))}
+            className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-800"
+          >
+            <option value={1}>Slow</option>
+            <option value={2}>Normal</option>
+            <option value={5}>Fast</option>
+            <option value={12}>Turbo</option>
+          </select>
+          <input id="view-time" type="range" min={0} max={lastT} value={t} onChange={(e) => { setPlaying(false); setViewTime(Number(e.target.value)); }} className="min-w-48 flex-1 accent-blue-700" />
           <Button variant="secondary" onClick={() => setViewTime(output.metrics.peak_queue_time)}>Peak queue (min {output.metrics.peak_queue_time})</Button>
           <Button variant="secondary" onClick={() => setViewTime(lastT)}>End (min {lastT})</Button>
         </div>
@@ -200,6 +246,8 @@ export function HospitalView({
           ))}
         </div>
       </Card>
+
+      <PatientTimeline output={output} viewTime={t} setViewTime={setViewTime} selectedId={selected?.id ?? null} onSelect={setSelectedId} />
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card title="Current allocations" description={`Patients being treated at minute ${t}.`}>

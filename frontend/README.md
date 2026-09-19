@@ -15,7 +15,7 @@ MedFlow simulates how a hospital allocates limited resources (doctors, nurses, b
 
 _Placeholders — add captures from a demo run:_
 
-| Control Room | Simulation + hospital view | Strategy Lab |
+| Control Room | Simulation + hospital view | Compare and advice |
 |---|---|---|
 | `docs/control-room.png` | `docs/simulation.png` | `docs/strategy-lab.png` |
 
@@ -27,8 +27,8 @@ _Placeholders — add captures from a demo run:_
 - **Simulation** – three strategies, duration, emergency surge, resource failure (resource, start, units), adjustable priority weights.
 - **Interactive hospital view** – drag through time (minute-by-minute), resource cards (green < 70 %, yellow 70–89 %, red ≥ 90 %), Waiting → In treatment → Treated flow, critical/overdue highlighting, current allocations, per-patient **decision explanation**.
 - **Results** – 9 KPI cards, 4 charts (queue length, utilization, wait distribution, treated vs waiting) and a strategy-comparison chart, all from real engine output.
-- **Strategy Lab** – FCFS vs Urgency Only vs Dynamic Priority on the same input, best value highlighted, treatment-order diff, findings computed from the metrics. When two strategies start patients in the same order it says so.
-- **Normal vs efficient system** – First-Come, First-Served vs Dynamic Priority, run as two separate simulations on identical data. A metric table (patients treated, completion time, waiting times, utilization, bottleneck, objective score) with the difference and percentage improvement, a fixed-template explanation, and the *Best tested configuration* (adds one unit of each resource and re-simulates).
+- **Compare strategies and get advice** – First-Come, First-Served (the most common, basic approach, used as the baseline) vs Urgency Only vs Dynamic Priority on the same input. A recommended strategy chosen by priority-ordered checks, calculated advice for making the system more efficient (including *what if you add one more?* — one unit of each resource, re-simulated), a side-by-side table with the change against the baseline, average wait per urgency level ("who waits?"), and the treatment-order diff. When two strategies start patients in the same order it says so.
+- **Patient timeline, playback and export** – a Gantt-style chart with one row per patient (waiting grey, waiting past the safety limit red, treatment blue) and a playhead that follows the hospital-view clock; click it to jump in time. Play / pause with four speeds animates the whole hospital view. Results can be downloaded as CSV (user-typed text is neutralised against spreadsheet formula injection).
 - **Contrast scenario** – a deterministic example (button on the Simulation page) built so the three strategies visibly choose differently. It does not change the algorithms.
 - **History** – every run is stored; open any past run.
 - **Graceful degradation** – without Supabase credentials the app runs on browser storage and says so.
@@ -72,18 +72,32 @@ Every strategy uses the same patients, arrival times, treatment durations, resou
 2. **Urgency Only** – order: urgency ↓, arrival ↑, id ↑. Protects critical cases but can starve low-urgency patients; waiting time is ignored.
 3. **Dynamic Priority** – the efficient policy. Order: S_i(T) ↓, urgency ↓, arrival ↑, id ↑, where `S = 5.0·urgency + 0.35·waitingTime + 2.0·deteriorationRisk + 3.0·emergencyFlag`. The waiting-time term lets a low-urgency patient overtake newer, more urgent arrivals once they have waited long enough, so nobody is starved. The score is stored for every patient and shown in the decision explanation.
 
+**Optional: protect blocked critical patients** (`reservation`, off by default, works with any strategy). Plain greedy backfilling lets a stream of small patients keep taking freed units, so a critical patient who needs several resources (e.g. two doctors) can wait indefinitely. With this option, when the top-ranked patient is critical, an emergency or already past the safety limit and cannot start, the earliest time they can start is computed from the running treatments and reserved: a lower-ranked patient may still start now only if they finish before that time or use only units that stay spare. This is EASY-style reservation backfilling. Measured on 300 random scenarios per load, it cut average critical-patient wait by about 8% but raised average wait and safety-limit breaches slightly (capacity sits idle while the reservation is held), so it is a trade-off rather than a free win and stays opt-in. Two other ideas were tried and dropped: reserving for every blocked head (worse on all averages), and a throughput bonus for short treatments (Smith's-rule style; under 1% effect because waiting and urgency dominate the score).
+
 Note: with the default weights, waiting has to differ by roughly 57 minutes (20 ÷ 0.35) before a urgency-1 patient outranks a fresh urgency-5 arrival, so on short or lightly loaded runs Dynamic Priority and Urgency Only can produce the same order; the app then says "These strategies produced the same order for this scenario." Use the contrast scenario to see the strategies diverge.
 
-### Normal vs efficient, and the objective score
+### How the recommendation is decided (and why not one score)
 
-*Normal* = First-Come, First-Served; *efficient* = Dynamic Priority. Each is a full, independent simulation of a deep copy of the same patients and resources. Every table value comes from those two runs. The lower objective score is better:
+First-Come, First-Served is the most common and basic approach, so it is the baseline. All three strategies are full, independent simulations of the same patients and resources; every number comes from those runs.
+
+A single blended score hides trade-offs and depends on weights someone picked. Reordering a queue does not create capacity — it decides *who* waits — so a strategy can win a weighted sum while making low-urgency patients wait far longer. The recommendation therefore walks these checks in priority order (`lib/simulation/advice.ts`), and each check only separates strategies still tied on the ones above it:
+
+1. every patient gets treated (fewest untreated)
+2. fewest patients waiting past the safety limit
+3. shortest average wait for critical patients
+4. shortest longest wait (fairness)
+5. shortest average wait
+
+Wait times within 1 minute or 5% of the best count as tied. If nothing separates the strategies, First-Come, First-Served is kept. The page also shows the average wait per urgency level so the price paid by low-urgency patients is visible, and states the trade-off against the baseline in words.
+
+The advice list is derived from the recommended strategy's run: unfinished patients, the best *tested* configuration (one extra unit of doctor, nurse, general bed, ICU bed or operating room, each fully re-simulated — not an exhaustive search), mostly-idle resources next to a bottleneck, safety-limit breaches, resources at ≥ 90% use, and Dynamic Priority behaving exactly like Urgency Only. The "best tested configuration" is the lowest objective score, which is still calculated for that purpose:
 
 ```
 objectiveScore = 1.0·totalWaitingTime + 4.0·criticalPatientWaitingTime
                + 10000·patientsRemaining + 10000·resourceOverload + 0.5·maximumWaitingTime
 ```
 
-Percentage improvement: lower-is-better `(normal − efficient) ÷ max(|normal|, 0.0001) × 100`; higher-is-better `(efficient − normal) ÷ max(|normal|, 0.0001) × 100`. The winner is labelled "Best system within the tested scheduling policies" — it is the best of the policies tried, not a proven global optimum. *Best tested configuration* likewise means the best of five one-unit additions (doctor, nurse, general bed, ICU bed, operating room), each fully re-simulated.
+but the page reports the resulting minutes saved rather than the score.
 
 ## Architecture
 
@@ -92,8 +106,8 @@ app/                 Next.js routes: / , /patients , /resources , /simulation , 
 components/          UI only (forms, tables, cards, charts, hospital view)
 lib/
   simulation/        Pure, testable engine — no React, no database
-    types.ts  policies.ts (score + strategies)  engine.ts  metrics.ts  efficiency.ts (normal vs efficient)
-    surge.ts  compare.ts  placeholder.ts  index.ts
+    types.ts  policies.ts (score + strategies)  engine.ts  metrics.ts  efficiency.ts (resource what-ifs)
+    surge.ts  compare.ts  advice.ts (recommendation + advice)  placeholder.ts  index.ts
   database.ts        Database interface + Supabase and browser-storage adapters
   supabase.ts        Browser client (refuses secret keys)
   runner.ts          "Run Simulation" pipeline: load → validate → run → save → update statuses
@@ -208,5 +222,5 @@ _Fill in before submission._ From the repo README: Dharansh – Python `run_simu
 3. Drag past minute 20: *queue grows during the surge*; drag to ~47: *ICU beds 2/2, red bottleneck banner*.
 4. Click a patient in **Patient flow** → *decision explanation* shows the score terms and the resources free at that moment.
 5. Point at the failure marker on the charts and the *Warnings* list: *resource failure* reduced ICU capacity and raised waits.
-6. **Strategy Lab**: compare FCFS / Urgency Only / Dynamic Priority — highlighted best values, treatment-order differences, and the findings list; note the trade-offs (FCFS best max wait, Urgency Only best critical wait, Dynamic in between).
+6. **Compare strategies and get advice** (bottom of the Simulation page): FCFS (the common baseline) vs Urgency Only vs Dynamic Priority — the recommended strategy and why, the advice list, *what if you add one more?*, and the who-waits chart that shows the trade-off for low-urgency patients.
 7. **Refresh** the page → patients, results and **History** are still there.
