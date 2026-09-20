@@ -15,6 +15,9 @@ import {
   type SimPatient,
   type SimulationOutput,
   type SkippedCandidate,
+  type StockBlock,
+  type StockOutcome,
+  type StockRequirement,
   type TimelinePoint,
 } from "./types";
 
@@ -75,6 +78,11 @@ export function assertValidInput(
   if (!isNonNegInt(params.failureUnits) || !isNonNegInt(params.surgeCount)) {
     throw new SimulationInputError("Failure units and surge size must be integers >= 0.");
   }
+  for (const c of params.availability ?? []) {
+    if (!isNonNegInt(c.time) || !Number.isInteger(c.delta) || !RESOURCE_KEYS.includes(c.resource)) {
+      throw new SimulationInputError("Availability changes need an integer minute >= 0, a resource and a whole-number change.");
+    }
+  }
   for (const w of Object.values(params.weights)) {
     if (!Number.isFinite(w)) throw new SimulationInputError("Weights must be finite numbers.");
   }
@@ -109,6 +117,17 @@ export function assertValidInput(
     if (!Number.isInteger(p.treatment_time) || p.treatment_time <= 0) {
       throw new SimulationInputError(`Patient ${p.id}: treatment time must be an integer > 0.`);
     }
+    for (const r of p.stock_requirements ?? []) {
+      if (r.item_type !== "medicine" && r.item_type !== "equipment") {
+        throw new SimulationInputError(`Patient ${p.id}: a stock requirement must be a medicine or equipment.`);
+      }
+      if (typeof r.item_id !== "string" || r.item_id.trim() === "") {
+        throw new SimulationInputError(`Patient ${p.id}: a stock requirement needs an item id.`);
+      }
+      if (!Number.isInteger(r.quantity) || r.quantity <= 0) {
+        throw new SimulationInputError(`Patient ${p.id}: stock quantity for "${r.item_id}" must be an integer > 0.`);
+      }
+    }
     let needsSomething = false;
     for (const k of RESOURCE_KEYS) {
       const need = p.required_resources[k] ?? 0;
@@ -132,7 +151,6 @@ export function runSimulation(
   const surge = params.emergencySurge
     ? generateSurgePatients(params.surgeStart, params.surgeCount)
     : [];
-  // Deep copy: a run must never share mutable patient state with another run.
   const all: SimPatient[] = [...patients, ...surge].map((p) => ({
     ...p,
     required_resources: { ...p.required_resources },
@@ -169,13 +187,53 @@ export function runSimulation(
     ? Math.min(params.failureUnits, resources[params.failedResource])
     : 0;
 
-  const allocationCapacity = (t: number): ResourceSet => {
+  const availability = [...(params.availability ?? [])].sort((a, b) => a.time - b.time);
+
+  // `known` is the minute the decision is taken at: a staff change is unforeseen, so a decision
+  // never looks ahead to one (history before a change is identical with or without it).
+  const allocationCapacity = (t: number, known = Infinity): ResourceSet => {
     const cap = cloneResourceSet(resources);
     if (failedUnits > 0 && t >= params.failureStart) {
       cap[params.failedResource] -= failedUnits;
     }
+    for (const c of availability) {
+      if (c.time <= t && c.time <= known) cap[c.resource] += c.delta;
+    }
+    for (const k of RESOURCE_KEYS) cap[k] = Math.max(0, cap[k]);
     return cap;
   };
+
+  // Stock constraints (optional). Medicines are consumed when a treatment starts and never come
+  // back; equipment units are held for the treatment and returned when it ends.
+  const stockOn = params.stock !== undefined;
+  const stockReq: StockRequirement[][] = all.map((p) => (stockOn ? (p.stock_requirements ?? []) : []));
+  const stockKey = (r: StockRequirement) => `${r.item_type}:${r.item_id}`;
+  const medicineLeft = new Map<string, number>(
+    Object.entries(params.stock?.medicines ?? {}).map(([id, m]) => [`medicine:${id}`, m.quantity]),
+  );
+  const equipmentHeld = new Map<string, number>();
+  const equipmentPeak = new Map<string, number>();
+  const stockName = (key: string): string => {
+    const [type, ...rest] = key.split(":");
+    const id = rest.join(":");
+    return (type === "medicine" ? params.stock?.medicines[id]?.name : params.stock?.equipment[id]?.name) ?? id;
+  };
+  const stockShort = (i: number): string[] => {
+    const short: string[] = [];
+    for (const r of stockReq[i]) {
+      const key = stockKey(r);
+      if (r.item_type === "medicine") {
+        if ((medicineLeft.get(key) ?? -1) < r.quantity) short.push(key);
+      } else {
+        const item = params.stock!.equipment[r.item_id];
+        if (!item || item.units - (equipmentHeld.get(key) ?? 0) < r.quantity) short.push(key);
+      }
+    }
+    return short;
+  };
+  const stockBlockedMinutes = new Map<string, number>();
+  const stockBlockedPatients = new Map<string, Set<number>>();
+  const patientStockBlocked: Map<string, number>[] = all.map(() => new Map<string, number>());
 
   const arrivalOrder = all
     .map((_, i) => i)
@@ -226,7 +284,6 @@ export function runSimulation(
     let shadow = now;
     for (let i = 0; i < releases.length && !fits(); i++) {
       shadow = releases[i].end;
-      // Everything that ends at the same minute frees its units together.
       while (i < releases.length && releases[i].end === shadow) {
         for (const k of RESOURCE_KEYS) free[k] += all[releases[i].idx].required_resources[k] ?? 0;
         i++;
@@ -269,7 +326,7 @@ export function runSimulation(
       const f = all[fi];
       const check = f.arrival_time + slack;
       if (f.arrival_time <= now || check >= end || knownAt(f) > now) continue;
-      const capAtSlot = allocationCapacity(check);
+      const capAtSlot = allocationCapacity(check, now);
       const used = usageAt(check);
       // Other appointments due at the same time need their units as well.
       for (const gi of slots) {
@@ -300,10 +357,32 @@ export function runSimulation(
     ];
   };
 
+  // Why a waiting patient can never start on stock alone (used when nothing is left to release).
+  const stockReasons = (p: SimPatient): string[] => {
+    const reasons: string[] = [];
+    if (!stockOn) return reasons;
+    for (const r of p.stock_requirements ?? []) {
+      const key = stockKey(r);
+      const label = stockName(key);
+      if (r.item_type === "medicine") {
+        if (!medicineLeft.has(key)) {
+          reasons.push(`${r.quantity} ${label} but that medicine is not in the inventory`);
+        } else if (medicineLeft.get(key)! < r.quantity) {
+          reasons.push(`${r.quantity} ${label} but only ${medicineLeft.get(key)} remain (stock is not replenished during a run)`);
+        }
+      } else {
+        const item = params.stock!.equipment[r.item_id];
+        if (!item) reasons.push(`${r.quantity} ${label} but that equipment is not in the inventory`);
+        else if (item.units < r.quantity) reasons.push(`${r.quantity} ${label} but only ${item.units} operable unit(s) exist`);
+      }
+    }
+    return reasons;
+  };
+
   let t = 0;
   let stopTime = 0;
   let error: string | null = null;
-  const maxIterations = 4 * n + 16;
+  const maxIterations = 4 * n + 16 + 2 * availability.length;
 
   for (let iteration = 0; ; iteration++) {
     if (iteration > maxIterations) {
@@ -320,6 +399,12 @@ export function runSimulation(
       const idx = running[r];
       if (startTime[idx]! + all[idx].treatment_time <= t) {
         for (const k of RESOURCE_KEYS) inUse[k] -= all[idx].required_resources[k] ?? 0;
+        for (const req of stockReq[idx]) {
+          if (req.item_type === "equipment") {
+            const key = stockKey(req);
+            equipmentHeld.set(key, (equipmentHeld.get(key) ?? 0) - req.quantity);
+          }
+        }
         running.splice(r, 1);
         treatedCount++;
       }
@@ -346,6 +431,7 @@ export function runSimulation(
       for (const cand of ranked) {
         const need = cand.patient.required_resources;
         const short = shortages(need, cap);
+        const stockShortNow = stockOn ? stockShort(cand.index) : [];
         if (short.length > 0 && !headBlocked) {
           headBlocked = true;
           // Only a head that has earned it holds resources back: critical, an
@@ -361,7 +447,8 @@ export function runSimulation(
           const apptReservation = slots.length > 0 && isExpected(p);
           if ((useReservation && deserves) || apptReservation) reserved = reserveFor(need, cap, t);
         }
-        if (short.length === 0) {
+        // Atomic: every resource and every stock item must be available, or nothing is taken.
+        if (short.length === 0 && stockShortNow.length === 0) {
           if (slots.length > 0 && !isExpected(cand.patient) && !neverHeld(cand.patient)) {
             const holding = holdFor(cand.patient, t);
             if (holding !== null) {
@@ -388,11 +475,28 @@ export function runSimulation(
             skipped: skipped.map((s) => ({ ...s, blocked_by: [...s.blocked_by] })),
           };
           for (const k of RESOURCE_KEYS) inUse[k] += need[k] ?? 0;
+          if (stockReq[cand.index].length > 0) {
+            decisions[cand.index]!.stock_used = stockReq[cand.index].map((r) => ({ ...r }));
+            for (const req of stockReq[cand.index]) {
+              const key = stockKey(req);
+              if (req.item_type === "medicine") {
+                medicineLeft.set(key, (medicineLeft.get(key) ?? 0) - req.quantity);
+              } else {
+                const held = (equipmentHeld.get(key) ?? 0) + req.quantity;
+                equipmentHeld.set(key, held);
+                equipmentPeak.set(key, Math.max(equipmentPeak.get(key) ?? 0, held));
+              }
+            }
+          }
           startTime[cand.index] = t;
           running.push(cand.index);
           startedNow.add(cand.index);
         } else {
-          skipped.push({ id: cand.patient.id, blocked_by: short });
+          skipped.push({
+            id: cand.patient.id,
+            blocked_by: short,
+            ...(stockShortNow.length > 0 ? { stock_blocked_by: stockShortNow.map(stockName) } : {}),
+          });
         }
       }
 
@@ -412,6 +516,19 @@ export function runSimulation(
       blockedPerResource[binding]++;
       everBlocked[i] = true;
       blockedPatientSets.get(binding)!.add(i);
+    }
+    const stockBlockedNow: { index: number; keys: string[] }[] = [];
+    if (stockOn) {
+      for (const i of queue) {
+        const keys = stockShort(i);
+        if (keys.length === 0) continue;
+        stockBlockedNow.push({ index: i, keys });
+        everBlocked[i] = true;
+        for (const key of keys) {
+          if (!stockBlockedPatients.has(key)) stockBlockedPatients.set(key, new Set());
+          stockBlockedPatients.get(key)!.add(i);
+        }
+      }
     }
     let bottleneck: ResourceKey | null = null;
     for (const k of RESOURCE_KEYS) {
@@ -435,10 +552,15 @@ export function runSimulation(
 
     if (treatedCount === n && queue.length === 0 && running.length === 0) break;
 
-    // Next meaningful event: an arrival or a completion makes progress; the
-    // failure start only changes capacity, so it is a timeline event too.
     let nextProgress = Infinity;
     if (arrivalPtr < n) nextProgress = all[arrivalOrder[arrivalPtr]].arrival_time;
+    let nextChange = Infinity;
+    for (const c of availability) {
+      if (c.time <= t) continue;
+      nextChange = Math.min(nextChange, c.time);
+      // Only staff coming back can unblock anyone; a departure is just a moment to re-plan.
+      if (c.delta > 0) nextProgress = Math.min(nextProgress, c.time);
+    }
     for (const idx of running) {
       nextProgress = Math.min(nextProgress, startTime[idx]! + all[idx].treatment_time);
     }
@@ -449,17 +571,23 @@ export function runSimulation(
         resources,
         params,
         t,
+        stockReasons,
       );
       break;
     }
-    let next = nextProgress;
+    let next = Math.min(nextProgress, nextChange);
     if (failedUnits > 0 && params.failureStart > t) next = Math.min(next, params.failureStart);
 
-    // Patients blocked now stay blocked until the next event.
     const span = next - t;
     for (const { index, binding } of blockedNow) {
       blockedMinutes[binding] += span;
       patientBlocked[index][binding] += span;
+    }
+    for (const { index, keys } of stockBlockedNow) {
+      for (const key of keys) {
+        stockBlockedMinutes.set(key, (stockBlockedMinutes.get(key) ?? 0) + span);
+        patientStockBlocked[index].set(key, (patientStockBlocked[index].get(key) ?? 0) + span);
+      }
     }
     for (const { index, appointment } of heldNow) {
       heldMinutes[index] += span;
@@ -468,7 +596,6 @@ export function runSimulation(
     t = next;
   }
 
-  // Completion guarantee: never report success while anyone is untreated.
   const verified = queue.length === 0 && running.length === 0 && treatedCount === n;
   if (!verified && error === null) {
     error = `Simulation ended in an inconsistent state: ${queue.length} waiting, ${running.length} in treatment, ${treatedCount} of ${n} treated.`;
@@ -484,7 +611,6 @@ export function runSimulation(
     while (snap + 1 < snapshots.length && snapshots[snap + 1].t <= m) snap++;
     const s = snapshots[snap];
     const cap = allocationCapacity(m);
-    // Displayed capacity: a failed unit that is still busy stays visible until freed.
     const capacityShown = emptyResourceSet();
     for (const k of RESOURCE_KEYS) capacityShown[k] = Math.max(cap[k], s.in_use[k]);
     timeline.push({
@@ -498,7 +624,6 @@ export function runSimulation(
     });
   }
 
-  // For a patient who never started (incomplete runs only), wait so far.
   const outcomes: PatientOutcome[] = all.map((p, i) => {
     const start = startTime[i];
     const decision = decisions[i];
@@ -523,6 +648,11 @@ export function runSimulation(
         total === 0
           ? null
           : RESOURCE_KEYS.reduce((best, k) => (per[k] > per[best] ? k : best), RESOURCE_KEYS[0]);
+      const blockedOnStock: StockBlock[] = [...patientStockBlocked[i]].map(([key, minutes]) => {
+        const [item_type, ...rest] = key.split(":");
+        return { item_type: item_type as StockBlock["item_type"], item_id: rest.join(":"), name: stockName(key), minutes };
+      });
+      if (blockedOnStock.length > 0) decision.stock_blocked = blockedOnStock;
       if (heldMinutes[i] > 0 && heldFor[i] !== null) {
         const holder = all.find((x) => x.id === heldFor[i]);
         decision.appointment_hold = {
@@ -544,6 +674,7 @@ export function runSimulation(
       appointment: p.appointment === true,
       ambulance: p.ambulance !== undefined,
       alert_time: p.ambulance?.alert_time ?? null,
+      ...(stockReq[i].length > 0 ? { stock_requirements: stockReq[i].map((r) => ({ ...r })) } : {}),
       status,
       start_time: start,
       end_time: end,
@@ -567,6 +698,55 @@ export function runSimulation(
     actualCompletionTime,
   });
 
+  const warnings = buildWarnings({
+    outcomes,
+    timeline,
+    metrics,
+    resources,
+    params,
+    surgeAdded: surge.length,
+    error,
+  });
+
+  let stock: StockOutcome | undefined;
+  if (params.stock) {
+    stock = {
+      medicines: Object.entries(params.stock.medicines).map(([id, m]) => {
+        const key = `medicine:${id}`;
+        const remaining = medicineLeft.get(key) ?? 0;
+        return {
+          item_id: id,
+          name: m.name,
+          initial: m.quantity,
+          consumed: m.quantity - remaining,
+          remaining,
+          blocked_patients: stockBlockedPatients.get(key)?.size ?? 0,
+          blocked_minutes: stockBlockedMinutes.get(key) ?? 0,
+        };
+      }),
+      equipment: Object.entries(params.stock.equipment).map(([id, e]) => {
+        const key = `equipment:${id}`;
+        return {
+          item_id: id,
+          name: e.name,
+          units: e.units,
+          peak_in_use: equipmentPeak.get(key) ?? 0,
+          blocked_patients: stockBlockedPatients.get(key)?.size ?? 0,
+          blocked_minutes: stockBlockedMinutes.get(key) ?? 0,
+        };
+      }),
+    };
+    for (const item of [...stock.medicines, ...stock.equipment]) {
+      if (item.blocked_patients > 0) {
+        warnings.push({
+          level: "warning",
+          code: "stock_blocked",
+          message: `${item.name} held back ${item.blocked_patients} patient(s) for ${item.blocked_minutes} patient-minutes in total.`,
+        });
+      }
+    }
+  }
+
   return {
     strategy: params.strategy,
     params,
@@ -574,19 +754,12 @@ export function runSimulation(
     patients: outcomes,
     metrics,
     timeline,
-    warnings: buildWarnings({
-      outcomes,
-      timeline,
-      metrics,
-      resources,
-      params,
-      surgeAdded: surge.length,
-      error,
-    }),
+    warnings,
     completed,
     error,
     isPlaceholder: false,
     engine: ENGINE_NAME,
+    ...(stock ? { stock } : {}),
   };
 }
 
@@ -596,15 +769,19 @@ function describeStall(
   nominal: ResourceSet,
   params: SimParams,
   t: number,
+  stockReasons: (p: SimPatient) => string[] = () => [],
 ): string {
   const reasons = waiting.slice(0, 5).map((p) => {
     const short = RESOURCE_KEYS.filter((k) => (p.required_resources[k] ?? 0) > cap[k]);
-    const detail = short
-      .map((k) => {
+    const detail = [
+      ...short.map((k) => {
         const failed = params.resourceFailure && k === params.failedResource && cap[k] < nominal[k];
-        return `${p.required_resources[k]} ${RESOURCE_LABELS[k].toLowerCase()} but only ${cap[k]} ${failed ? "remain after the failure" : "exist"}`;
-      })
-      .join(" and ");
+        const staffed = !failed && cap[k] < nominal[k];
+        const why = failed ? "remain after the failure" : staffed ? "are available after staff changes" : "exist";
+        return `${p.required_resources[k]} ${RESOURCE_LABELS[k].toLowerCase()} but only ${cap[k]} ${why}`;
+      }),
+      ...stockReasons(p),
+    ].join(" and ");
     return `${p.id} needs ${detail}`;
   });
   const more = waiting.length > 5 ? `, and ${waiting.length - 5} more` : "";

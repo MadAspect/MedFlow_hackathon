@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, Ambulance, CalendarDays, FlaskConical, History, LayoutDashboard, Stethoscope, Users, X, type LucideIcon } from "lucide-react";
+import { Activity, Ambulance, CalendarDays, FlaskConical, History, LayoutDashboard, Pill, Stethoscope, UserCog, Users, X, type LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
+import { RunSummaryDialog } from "./RunSummaryDialog";
 import { ThemeToggle } from "./ThemeToggle";
 import { cx, EcgLine, LoadingBlock, Notice, StatusDot } from "./ui";
 import { DATA_NOTICE, DISCLAIMER } from "@/lib/constants";
@@ -16,6 +17,8 @@ const NAV: { href: string; label: string; Icon: LucideIcon }[] = [
   { href: "/appointments", label: "Appointments", Icon: CalendarDays },
   { href: "/ambulances", label: "Ambulances", Icon: Ambulance },
   { href: "/resources", label: "Resources", Icon: Stethoscope },
+  { href: "/inventory", label: "Inventory", Icon: Pill },
+  { href: "/staff", label: "Staff", Icon: UserCog },
   { href: "/simulation", label: "Simulation", Icon: FlaskConical },
   { href: "/history", label: "History", Icon: History },
 ];
@@ -123,7 +126,6 @@ function Frame({ children }: { children: ReactNode }) {
   const { ready, connection } = useStore();
   return (
     <div className="min-h-screen lg:pl-56">
-      {/* Desktop: fixed sidebar */}
       <aside className="fixed inset-y-0 left-0 z-40 hidden w-56 flex-col border-r border-slate-200 bg-surface px-3 py-4 lg:flex">
         <div className="px-2.5 pb-5">
           <Logo />
@@ -140,7 +142,6 @@ function Frame({ children }: { children: ReactNode }) {
         </div>
       </aside>
 
-      {/* Mobile: slim top bar */}
       <header className="sticky top-0 z-40 border-b border-slate-200 bg-surface/90 backdrop-blur lg:hidden">
         <div className="flex items-center justify-between px-4 py-2.5">
           <Logo />
@@ -167,6 +168,7 @@ function Frame({ children }: { children: ReactNode }) {
           {DISCLAIMER} {DATA_NOTICE}
         </p>
       </main>
+      <RunSummaryDialog />
       <Toaster />
     </div>
   );

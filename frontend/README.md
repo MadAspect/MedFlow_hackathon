@@ -7,6 +7,77 @@ Waitless simulates how a hospital allocates limited resources (doctors, nurses, 
 > **Waitless’s simulation, scheduling, resource allocation, optimization, metrics, and system comparison are deterministic mathematical processes. No AI model is used at runtime to make hospital scheduling decisions.**
 > The simulation needs no AI API key and, apart from saving results to the database, runs entirely offline (no network calls, no randomness). Repeating a run with the same input gives identical output.
 
+## What was integrated from the second prototype
+
+This app is the base. A second MedFlow prototype (a Python backend with a vanilla-JS frontend, on the repository's `main` branch) was used as a source of ideas. Its stock, staff and live-arrival features were **rebuilt in TypeScript on this app's types, UI and database conventions**; no file was copied over, and the scheduling maths in `lib/simulation/policies.ts` is unchanged.
+
+| Feature | Came from | Where it lives here |
+|---|---|---|
+| Control Room, patients, appointments, ambulances, resources, history, light/dark themes, Supabase + browser-storage fallback | this prototype (unchanged) | existing pages |
+| Four strategies, including the efficient Dynamic Priority algorithm and its harm-density variant | this prototype (unchanged) | `lib/simulation/policies.ts`, `hazard.ts`, `efficiency.ts` |
+| Medicine stock with minimum thresholds (its "consumables") | second prototype | `lib/inventory.ts`, `/inventory` |
+| Equipment stock: units owned, free, in use, out of service | second prototype | `lib/inventory.ts`, `/inventory` |
+| Staff roster with roles, departments, shifts and an availability status | second prototype | `lib/staff.ts`, `/staff` |
+| Marking staff unavailable or available and having scheduling respond | second prototype (idea) | `lib/staff.ts`, engine `availability` parameter |
+| Adding a patient while a run is in progress | second prototype (idea) | `addPatientToRun` in `lib/store.tsx` |
+
+**Not taken:** the Python server and SQLite store, expert-system triage, the multi-zone hospital map, the emergency-mode state machine, the rolling-horizon optimizer and the duration predictors. They are a different architecture and would have replaced, not extended, this engine.
+
+### Medicine and equipment stock (`/inventory`)
+
+Status is always derived from the numbers, never stored:
+
+| | Rule |
+|---|---|
+| Medicine out of stock | `quantity <= 0` |
+| Medicine low | `quantity <= minimum_threshold` |
+| Medicine available | `quantity > minimum_threshold` |
+| Equipment unavailable | `available_quantity <= 0` **or** `maintenance_status = maintenance` |
+| Equipment low (warning only) | available, and `available_quantity <= minimum_threshold` |
+
+Negative quantities are refused everywhere, and equipment can never have more units free plus in use than it owns.
+
+**Stock constraints in the simulation are off by default**, so existing results do not change. Turn them on with
+
+```
+NEXT_PUBLIC_ENABLE_STOCK_CONSTRAINTS=true
+```
+
+in `.env.local` (the `NEXT_PUBLIC_` prefix is what makes it visible to the browser; restart `npm run dev` after changing it). Give a patient stock needs on the Patients page or in "Add patient to current run". With the flag on, a patient can start only when **every** resource *and* every stock item is available, and the allocation is all-or-nothing:
+
+- **Medicines** are used up when the treatment starts and are not replenished during a run.
+- **Equipment** units are held for the length of the treatment and handed back the minute it ends.
+- A patient held back by stock stays in the queue (others can still start), and the decision panel says which item held them back and for how many minutes.
+- A requirement that can never be met (an item that does not exist, is under maintenance, or is more than the stock holds) is reported as an explicit error, the run is marked incomplete, and the app never claims everyone was treated.
+
+A run works on a **copy** of the stock taken when it starts and never writes consumption back, so re-running a scenario always starts from the same numbers. The copy is saved with the run.
+
+**Patients request stock explicitly.** Every patient carries a list of requests (item and quantity). A new patient starts with the *standard set for their condition and urgency* from `lib/treatments.ts` (for example a ventilator only for critical multi-trauma, gloves for everyone), resolved against the inventory you actually have; items the hospital does not stock are skipped and named. Any line can be added, removed or changed, and "Reset to standard" goes back. Patients added without a list (example patients, appointments, ambulances) get the standard set automatically, and the Patients table shows what each one has requested. The standard sets are a starting point for a synthetic simulation, not clinical guidance.
+
+The **Algorithms** tab on the Simulation page explains the ordering rule and formulas behind each strategy (FCFS, Urgency Only, Dynamic Priority, Harm-Density Index), the scenario mechanics (reservation, appointments and ambulances, surge, failures and staffing, stock) and the metrics. Its constants and worked examples are read from the engine, so they stay in sync with the code.
+
+### Staff and availability (`/staff`)
+
+Doctors and nurses are scheduled by the engine as interchangeable *counts*, so the roster acts as the people behind those counts: each doctor or nurse who is not **Available** (Busy, On leave, Unavailable or Training) takes one unit off the configured capacity. Technicians and other staff are recorded and shown, but the engine has no resource for them. Shift times are informational.
+
+- A change made while watching a run takes effect **at the minute being watched** and the run is recalculated from its own starting conditions. Treatments that already started are never altered, and the recalculated run is identical to the old one up to that minute (tested).
+- Someone in the middle of a treatment is not pulled out of it: they finish it and get no new assignments, and the app says so. "Current assignment" is a deterministic display mapping (the engine does not track individuals).
+- If staffing leaves a patient with no possible doctor or nurse, the run stops with an explicit message rather than looping.
+- Every change is kept in `staff_availability_events` with the minute it took effect and an optional reason.
+- The existing "Resource failure / staff shortage" scenario control is separate and still works.
+
+### Adding a patient to a run in progress
+
+On the Simulation page, **Add patient to current run** adds a patient who arrives at the minute you are watching. Because the simulation is deterministic, it is recalculated from minute 0 with that patient included: nothing that started earlier changes, the patient cannot be treated before arriving, and they appear in the queue, the history and the final metrics. The run continues until everyone, including the newcomer, is treated. Each recalculation is saved to History like any other run.
+
+### Database
+
+Run `supabase/migrations/20260920_inventory_staff.sql` once on an existing project (new projects get the same block from `supabase/schema.sql`). It is additive: it adds `medicines`, `equipment`, `staff`, `staff_availability_events` and `patient_stock_requirements` with indexes and the same demo RLS policy, and touches no existing table or row. If the tables are missing the app still opens; only Inventory and Staff report that they are unavailable. With no Supabase, everything is kept in browser storage exactly like patients and runs.
+
+### Browser tests never touch a real project
+
+`npm run test:e2e` clears and rewrites patients, so `playwright.config.ts` starts its dev server with blank Supabase credentials. It stays on browser storage even if `.env.local` has real ones.
+
 ## Problem statement
 
 > Given the current patient queue and available doctors, nurses, beds, ICU beds, and operating rooms, which patient should be treated next, and how does the hospital perform under different scheduling strategies?
@@ -56,7 +127,7 @@ _Placeholders — add captures from a demo run:_
 - **Results** – 9 KPI cards, 4 charts (queue length, utilization, wait distribution, treated vs waiting) and a strategy-comparison chart, all from real engine output.
 - **Compare strategies and get advice** – First-Come, First-Served (the most common, basic approach, used as the baseline) vs Urgency Only vs Dynamic Priority on the same input. A recommended strategy chosen by priority-ordered checks, calculated advice for making the system more efficient (including *what if you add one more?* — one unit of each resource, re-simulated), a side-by-side table with the change against the baseline, average wait per urgency level ("who waits?"), and the treatment-order diff. When two strategies start patients in the same order it says so.
 - **Patient timeline, playback and export** – a Gantt-style chart with one row per patient (waiting grey, waiting past the safety limit red, treatment blue) and a playhead that follows the hospital-view clock; click it to jump in time. Play / pause with four speeds animates the whole hospital view. Results can be downloaded as CSV (user-typed text is neutralised against spreadsheet formula injection).
-- **Appointments** – book patients in advance on the *Appointments* page (slot shown as a clock time from 08:00, urgency, treatment time, resources). The form checks the slot against the other bookings and the hospital's capacity while you type, refuses a booking that could never be treated, warns about overbooking and can jump to the next free slot; a *Booked load* chart shows how full each 15 minutes are. Booked appointments are part of every simulation and are protected by the engine (see below). Results show how many started on time, the average delay and what the walk-ins paid for it.
+- **Appointments** – book patients in advance on the *Appointments* page (slot shown as a clock time counted from when the app opens, urgency, treatment time, resources). The form checks the slot against the other bookings and the hospital's capacity while you type, refuses a booking that could never be treated, warns about overbooking and can jump to the next free slot; a *Booked load* chart shows how full each 15 minutes are. Booked appointments are part of every simulation and are protected by the engine (see below). Results show how many started on time, the average delay and what the walk-ins paid for it.
 - **Contrast scenario** – a deterministic example (button on the Simulation page) built so the three strategies visibly choose differently. It does not change the algorithms.
 - **History** – every run is stored; open any past run.
 - **Graceful degradation** – without Supabase credentials the app runs on browser storage and says so.

@@ -1,9 +1,11 @@
 "use client";
 
-import { Download } from "lucide-react";
+import { ClipboardList, Download } from "lucide-react";
 import { useState } from "react";
+import { Algorithms } from "@/components/Algorithms";
 import { HospitalView, WarningsList } from "@/components/HospitalView";
 import { LiveBar } from "@/components/LiveBar";
+import { LivePatientForm } from "@/components/LivePatientForm";
 import { MetricsCards } from "@/components/MetricsCards";
 import { ResultsCharts } from "@/components/ResultsCharts";
 import { SimulationControls } from "@/components/SimulationControls";
@@ -13,12 +15,13 @@ import { downloadCsv, outcomesToCsv } from "@/lib/export";
 import { useStore } from "@/lib/store";
 import { PLACEHOLDER_NOTICE, RESOURCE_LABELS, STRATEGY_LABELS, type SimulationOutput } from "@/lib/simulation";
 
-type Tab = "overview" | "hospital" | "charts" | "compare";
+type Tab = "overview" | "hospital" | "charts" | "compare" | "algorithms";
 const TABS: { value: Tab; label: string }[] = [
   { value: "overview", label: "Overview" },
   { value: "hospital", label: "Hospital" },
   { value: "charts", label: "Charts" },
   { value: "compare", label: "Compare & advice" },
+  { value: "algorithms", label: "Algorithms" },
 ];
 
 function tabFromHash(): Tab {
@@ -39,7 +42,7 @@ function summarise(output: SimulationOutput): string {
 }
 
 export default function SimulationPage() {
-  const { current, viewTime, setViewTime, liveReplay } = useStore();
+  const { current, viewTime, setViewTime, liveReplay, staff, resources, openSummary } = useStore();
   const output = current?.output ?? null;
   // The page is only rendered once the store is ready (on the client), so reading the URL here is safe.
   const [tab, setTabState] = useState<Tab>(tabFromHash);
@@ -56,9 +59,14 @@ export default function SimulationPage() {
         actions={
           output &&
           !output.isPlaceholder && (
-            <Button variant="secondary" onClick={() => downloadCsv(`waitless-${output.strategy}-run.csv`, outcomesToCsv(output))}>
-              <Download size={15} aria-hidden /> Export CSV
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="secondary" onClick={openSummary}>
+                <ClipboardList size={15} aria-hidden /> Run summary
+              </Button>
+              <Button variant="secondary" onClick={() => downloadCsv(`waitless-${output.strategy}-run.csv`, outcomesToCsv(output))}>
+                <Download size={15} aria-hidden /> Export CSV
+              </Button>
+            </div>
           )
         }
       />
@@ -74,6 +82,7 @@ export default function SimulationPage() {
             {output.params.resourceFailure ? ` · ${RESOURCE_LABELS[output.params.failedResource].toLowerCase()} failure at minute ${output.params.failureStart}` : ""}
             {current?.createdAt ? ` · run ${new Date(current.createdAt).toLocaleString()}` : ""}
           </p>
+          <LivePatientForm />
         </>
       )}
 
@@ -92,9 +101,10 @@ export default function SimulationPage() {
               )}
             </>
           )}
-          {tab === "hospital" && <HospitalView output={output} viewTime={viewTime} setViewTime={setViewTime} />}
+          {tab === "hospital" && <HospitalView output={output} viewTime={viewTime} setViewTime={setViewTime} staff={staff} resources={resources} />}
           {tab === "charts" && <ResultsCharts output={output} viewTime={viewTime} />}
           {tab === "compare" && <StrategyComparison />}
+          {tab === "algorithms" && <Algorithms />}
         </div>
       </div>
     </div>

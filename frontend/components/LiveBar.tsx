@@ -17,7 +17,7 @@ export function LiveBar({ className }: { className?: string }) {
   const atEnd = t >= last;
   const toggle = () => {
     if (playing) return setPlaying(false);
-    if (atEnd) setViewTime(0); // replay from the start
+    if (atEnd) setViewTime(0);
     setPlaying(true);
   };
   const late = snap.appointmentsLate;

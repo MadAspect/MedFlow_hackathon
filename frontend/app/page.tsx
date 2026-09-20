@@ -3,6 +3,7 @@
 import { ArrowRight, CheckCircle2, Circle, PlayCircle } from "lucide-react";
 import Link from "next/link";
 import { LiveBar } from "@/components/LiveBar";
+import { OperationsOverview } from "@/components/OperationsOverview";
 import { ResourceCards } from "@/components/ResourceCards";
 import { WarningsList } from "@/components/HospitalView";
 import { Button, Card, InfoTip, PageHeader, Stat, fmt1 } from "@/components/ui";
@@ -81,6 +82,8 @@ export default function ControlRoomPage() {
         </div>
         {output && point ? <ResourceCards total={point.capacity} inUse={point.in_use} /> : <ResourceCards total={resources} inUse={emptyResourceSet()} />}
       </section>
+
+      <OperationsOverview />
 
       <div className="grid gap-4 lg:grid-cols-5">
         <Card title="Get started" className="lg:col-span-2">

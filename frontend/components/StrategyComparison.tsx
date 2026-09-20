@@ -91,7 +91,6 @@ export function StrategyComparison() {
               ),
           )}
 
-          {/* 1. Recommendation */}
           <div className={cx("rounded-lg border-2 p-4", result.verdict.tie ? "border-blue-300 bg-blue-50" : "border-emerald-300 bg-emerald-50")}>
             <p className="text-xs font-semibold tracking-wide text-slate-700 uppercase">Recommended strategy</p>
             <p className="mt-1 text-xl font-bold text-slate-900">{STRATEGY_LABELS[result.verdict.strategy]}</p>
@@ -106,7 +105,6 @@ export function StrategyComparison() {
             </p>
           </div>
 
-          {/* 2. Advice */}
           <div>
             <h3 className="text-base font-semibold text-slate-900">How to make this system more efficient</h3>
             <p className="text-sm text-slate-600">
@@ -135,7 +133,6 @@ export function StrategyComparison() {
             )}
           </div>
 
-          {/* 3. Resource what-if */}
           <div>
             <h3 className="text-base font-semibold text-slate-900">What if you add one more?</h3>
             <p className="text-sm text-slate-600">
@@ -188,7 +185,6 @@ export function StrategyComparison() {
             </div>
           </div>
 
-          {/* 4. Side-by-side comparison */}
           <div>
             <h3 className="text-base font-semibold text-slate-900">Side by side</h3>
             <p className="text-sm text-slate-600">
@@ -255,7 +251,6 @@ export function StrategyComparison() {
             )}
           </div>
 
-          {/* 5. Who waits */}
           <div>
             <h3 className="text-base font-semibold text-slate-900">Who waits under each strategy?</h3>
             <p className="text-sm text-slate-600">
@@ -287,7 +282,6 @@ export function StrategyComparison() {
             <p className="text-xs text-slate-500">The number in brackets is how many patients have that urgency.</p>
           </div>
 
-          {/* 6. Treatment order */}
           <div>
             <h3 className="text-base font-semibold text-slate-900">Treatment order (first 15 started)</h3>
             <p className="text-xs text-slate-500">Highlighted patients start in a different position than under First-Come, First-Served — this is where the policy changes the order.</p>
@@ -309,7 +303,6 @@ export function StrategyComparison() {
             </div>
           </div>
 
-          {/* 7. Method */}
           <details className="rounded-md border border-slate-200 p-3 text-sm">
             <summary className="cursor-pointer font-medium text-slate-800">How the recommendation is decided</summary>
             <p className="mt-2 text-slate-700">The strategies are checked in this order. Each check only separates strategies that are still tied on the checks above it:</p>

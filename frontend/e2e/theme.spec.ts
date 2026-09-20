@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-const ROUTES = ["/", "/patients", "/appointments", "/resources", "/simulation", "/history"];
+const ROUTES = ["/", "/patients", "/appointments", "/resources", "/inventory", "/staff", "/simulation", "/history"];
 const KEY = "waitless-theme";
 
 // Values of the design tokens in app/globals.css.

@@ -232,7 +232,6 @@ export function buildWarnings(input: WarningInput): SimWarning[] {
     });
   }
 
-  // Patients whose needs exceed capacity can never be scheduled.
   for (const k of RESOURCE_KEYS) {
     const reduced =
       params.resourceFailure && k === params.failedResource
@@ -262,7 +261,6 @@ export function buildWarnings(input: WarningInput): SimWarning[] {
     }
   }
 
-  // Saturation and bottlenecks per resource.
   const topBottleneck = metrics.bottlenecks[0]?.resource;
   for (const k of RESOURCE_KEYS) {
     let saturatedMinutes = 0;

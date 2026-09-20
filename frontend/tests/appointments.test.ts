@@ -7,7 +7,9 @@ import {
   analyse,
   checkSlot,
   emptyResourceSet,
+  minutesOfDay,
   runSimulation,
+  setClockStart,
   slotIsFree,
   slotLabel,
   suggestSlot,
@@ -228,9 +230,18 @@ describe("booking helpers", () => {
   ];
 
   it("formats clock times from an 08:00 start", () => {
+    setClockStart(8 * 60);
     expect(slotLabel(0)).toBe("08:00");
     expect(slotLabel(90)).toBe("09:30");
     expect(slotLabel(16 * 60)).toBe("00:00 +1d");
+  });
+
+  it("starts the clock at the given time of day", () => {
+    setClockStart(minutesOfDay(new Date(2026, 8, 20, 10, 20)));
+    expect(slotLabel(0)).toBe("10:20");
+    expect(slotLabel(45)).toBe("11:05");
+    expect(slotLabel(14 * 60)).toBe("00:20 +1d");
+    setClockStart(8 * 60);
   });
 
   it("flags overbooking and impossible needs", () => {

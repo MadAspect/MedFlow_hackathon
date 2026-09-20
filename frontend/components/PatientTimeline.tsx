@@ -79,7 +79,6 @@ export function PatientTimeline({
       </div>
 
       <div className="relative max-h-[26rem] overflow-y-auto rounded-lg border border-slate-200 bg-surface">
-        {/* time axis */}
         <div className="sticky top-0 z-10 flex border-b border-slate-200 bg-slate-50/95 text-[10px] text-slate-500 backdrop-blur">
           <div className="w-[84px] shrink-0 px-2 py-1 font-semibold uppercase">Patient</div>
           <div className="relative h-6 flex-1 cursor-pointer" onClick={scrub}>
@@ -154,7 +153,6 @@ export function PatientTimeline({
             );
           })}
 
-          {/* markers and playhead sit over the plot area only */}
           <div className="pointer-events-none absolute inset-y-0 right-0" style={{ left: LABEL_W }} aria-hidden>
             {markers.map((m) => (
               <div key={m.label} className="absolute inset-y-0 border-l border-dashed" style={{ left: pct(m.at), borderColor: m.color }} />

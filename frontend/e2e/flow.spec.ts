@@ -6,7 +6,7 @@ async function runDemo(page: Page) {
   page.on("dialog", (d) => void d.accept());
   await page.goto("/");
   await page.getByRole("button", { name: /^Run demo/ }).click();
-  await expect(page.getByText(/patients stored/).first()).toContainText("25"); // demo patients were written
+  await expect(page.getByText(/patients stored/).first()).toContainText("30"); // demo patients and appointments were written
   await page.goto("/simulation");
 }
 
@@ -33,7 +33,7 @@ for (const mode of ["Light", "Dark"] as const) {
     await page.getByRole("radio", { name: mode, exact: true }).click();
 
     // Performance statistics come from the run, and the run continued past the planned duration.
-    await expect(page.getByText(/35 of 35 patients were treated/)).toBeVisible();
+    await expect(page.getByText(/40 of 40 patients were treated/)).toBeVisible();
     await expect(page.getByText(/simulation continued until minute/)).toBeVisible();
 
     await page.getByRole("tab", { name: /Compare/ }).click();
@@ -72,12 +72,13 @@ test("ambulances: log one through the form, load the examples, and see the arriv
   await expect(page.getByText("Travel time must be at least 1 minute.")).toBeVisible();
 
   await page.getByRole("button", { name: /Load examples/ }).click();
-  await expect(page.getByRole("heading", { name: /Inbound ambulances \(6\)/ })).toBeVisible();
+  // M001 is already logged (and is also the first example), so the examples add M002-M005: five in all.
+  await expect(page.getByRole("heading", { name: /Inbound ambulances \(5\)/ })).toBeVisible();
 });
 
 test("the demo has ambulances: the hospital view shows an inbound lane and the results count them", async ({ page }) => {
   await runDemo(page);
-  await expect(page.getByLabel("Act on ambulance pre-alerts")).toBeChecked();
+  await expect(page.getByRole("switch", { name: "Act on ambulance pre-alerts" })).toBeChecked();
   await page.getByRole("tab", { name: /Hospital/ }).click();
   await expect(page.getByRole("heading", { name: "Inbound ambulances" })).toBeVisible();
 

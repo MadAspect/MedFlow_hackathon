@@ -106,6 +106,15 @@ export const DEMO_PATIENTS: NewPatient[] = build([
   ["D25", "Laceration", 52, 2, 25, { nurse: 1, bed: 1 }],
 ]).map((p) => (p.patient_id in DEMO_AMBULANCE_ALERTS ? { ...p, alert_time: DEMO_AMBULANCE_ALERTS[p.patient_id] } : p));
 
+/** Booked appointments for the demo: fixed slots that hold a doctor, a nurse and a bed. */
+export const DEMO_APPOINTMENTS: NewPatient[] = build([
+  ["A01", "Routine check", 12, 1, 15, { doctor: 1, nurse: 1, bed: 1 }],
+  ["A02", "Fracture", 20, 2, 25, { doctor: 1, nurse: 1, bed: 1 }],
+  ["A03", "Minor illness", 30, 1, 10, { doctor: 1, nurse: 1, bed: 1 }],
+  ["A04", "Laceration", 38, 2, 20, { doctor: 1, nurse: 1, bed: 1 }],
+  ["A05", "Routine check", 45, 1, 15, { doctor: 1, nurse: 1, bed: 1 }],
+]).map((p) => ({ ...p, appointment: true }));
+
 export const DEMO_PARAMS: Partial<SimParams> = {
   strategy: "dynamic",
   duration: 60,

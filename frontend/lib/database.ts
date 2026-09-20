@@ -1,5 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getSupabase, getSupabaseConfigState } from "./supabase";
+import type { Equipment, Medicine, PatientStockRequirementRow } from "./inventory";
+import type { StaffAvailabilityEvent, StaffMember } from "./staff";
 import { DEFAULT_WEIGHTS, scoreBreakdown } from "./simulation/policies";
 import {
   RESOURCE_KEYS,
@@ -11,6 +13,8 @@ import {
   type SimParams,
   type SimWarning,
   type SimulationOutput,
+  type StockOutcome,
+  type StockRequirement,
   type TimelinePoint,
 } from "./simulation/types";
 
@@ -63,6 +67,8 @@ export interface RunRow {
     resources: ResourceSet;
     appointments?: string[];
     ambulances?: Record<string, number>;
+    stock_requirements?: Record<string, StockRequirement[]>;
+    stock_outcome?: StockOutcome;
   };
   engine: string;
   is_placeholder: boolean;
@@ -142,6 +148,42 @@ export interface Database {
   saveSimulation(output: SimulationOutput): Promise<StoredRun>;
   listRuns(limit?: number): Promise<StoredRun[]>;
   getRun(id: string): Promise<StoredRun | null>;
+
+  listMedicines(): Promise<Medicine[]>;
+  saveMedicine(medicine: Medicine): Promise<Medicine>;
+  deleteMedicine(id: string): Promise<void>;
+  listEquipment(): Promise<Equipment[]>;
+  saveEquipment(equipment: Equipment): Promise<Equipment>;
+  deleteEquipment(id: string): Promise<void>;
+
+  listStaff(): Promise<StaffMember[]>;
+  saveStaff(member: StaffMember): Promise<StaffMember>;
+  deleteStaff(id: string): Promise<void>;
+  listStaffEvents(limit?: number): Promise<StaffAvailabilityEvent[]>;
+  addStaffEvent(event: Omit<StaffAvailabilityEvent, "id" | "created_at">): Promise<StaffAvailabilityEvent>;
+
+  listStockRequirements(): Promise<PatientStockRequirementRow[]>;
+  /** Replaces what one patient needs from stock (an empty list clears it). */
+  setStockRequirements(patientId: string, requirements: StockRequirementInput[]): Promise<void>;
+}
+
+export interface StockRequirementInput {
+  item_type: "medicine" | "equipment";
+  item_id: string;
+  quantity: number;
+}
+
+export const STAFF_EVENT_LIMIT = 200;
+
+/** Adds up repeated lines for the same item, dropping zero quantities. */
+export function mergeRequirements(requirements: StockRequirementInput[]): StockRequirementInput[] {
+  const merged = new Map<string, StockRequirementInput>();
+  for (const r of requirements) {
+    if (r.quantity <= 0) continue;
+    const key = `${r.item_type}:${r.item_id}`;
+    merged.set(key, { ...r, quantity: (merged.get(key)?.quantity ?? 0) + r.quantity });
+  }
+  return [...merged.values()];
 }
 
 export const RUN_HISTORY_LIMIT = 50;
@@ -163,6 +205,21 @@ export function resourceRowFields(resources: ResourceSet) {
     beds: resources.bed,
     icu_beds: resources.icu_bed,
     operating_rooms: resources.operating_room,
+  };
+}
+
+/**
+ * A row for the patients table with every column set. A bulk insert sends the same columns for all
+ * rows, so a row that leaves `appointment` out would be written as null rather than the column's
+ * default (false) as soon as another row in the batch includes it.
+ */
+export function patientInsertRow(p: NewPatient) {
+  return {
+    ...p,
+    appointment: p.appointment ?? false,
+    alert_time: p.alert_time ?? null,
+    status: "waiting" as PatientStatus,
+    priority_score: basePriorityScore(p),
   };
 }
 
@@ -194,6 +251,14 @@ export function runRecordsFromOutput(output: SimulationOutput) {
       resources: output.resources,
       appointments: output.patients.filter((p) => p.appointment).map((p) => p.id),
       ambulances: Object.fromEntries(output.patients.filter((p) => p.ambulance && p.alert_time != null).map((p) => [p.id, p.alert_time as number])),
+      ...(output.params.stock
+        ? {
+            stock_requirements: Object.fromEntries(
+              output.patients.filter((p) => p.stock_requirements?.length).map((p) => [p.id, p.stock_requirements!]),
+            ),
+            ...(output.stock ? { stock_outcome: output.stock } : {}),
+          }
+        : {}),
     },
     engine: output.engine,
     is_placeholder: output.isPlaceholder,
@@ -262,11 +327,7 @@ export function createSupabaseDatabase(client: SupabaseClient): Database {
 
     async insertPatients(patients) {
       if (patients.length === 0) return [];
-      const rows = patients.map((p) => ({
-        ...p,
-        status: "waiting" as PatientStatus,
-        priority_score: basePriorityScore(p),
-      }));
+      const rows = patients.map(patientInsertRow);
       const { data, error } = await client.from("patients").insert(rows).select();
       check(error, "Could not save patients");
       return (data ?? []) as PatientRow[];
@@ -275,11 +336,15 @@ export function createSupabaseDatabase(client: SupabaseClient): Database {
     async deletePatient(patientId) {
       const { error } = await client.from("patients").delete().eq("patient_id", patientId);
       check(error, "Could not delete patient");
+      const { error: reqError } = await client.from("patient_stock_requirements").delete().eq("patient_id", patientId);
+      check(reqError, "Could not delete the patient's stock requirements");
     },
 
     async clearPatients() {
       const { error } = await client.from("patients").delete().not("id", "is", null);
       check(error, "Could not clear patients");
+      const { error: reqError } = await client.from("patient_stock_requirements").delete().not("id", "is", null);
+      check(reqError, "Could not clear stock requirements");
     },
 
     async setPatientStatus(patientId, status) {
@@ -411,6 +476,99 @@ export function createSupabaseDatabase(client: SupabaseClient): Database {
         allocations: (allocations ?? []) as AllocationRow[],
       };
     },
+
+    async listMedicines() {
+      const { data, error } = await client.from("medicines").select("*").order("name", { ascending: true });
+      check(error, "Could not load medicines");
+      return (data ?? []) as Medicine[];
+    },
+
+    async saveMedicine(medicine) {
+      const { data, error } = await client.from("medicines").upsert(medicine, { onConflict: "id" }).select().single();
+      check(error, "Could not save medicine");
+      return data as Medicine;
+    },
+
+    async deleteMedicine(id) {
+      const { error } = await client.from("medicines").delete().eq("id", id);
+      check(error, "Could not remove medicine");
+    },
+
+    async listEquipment() {
+      const { data, error } = await client.from("equipment").select("*").order("name", { ascending: true });
+      check(error, "Could not load equipment");
+      return (data ?? []) as Equipment[];
+    },
+
+    async saveEquipment(equipment) {
+      const { data, error } = await client.from("equipment").upsert(equipment, { onConflict: "id" }).select().single();
+      check(error, "Could not save equipment");
+      return data as Equipment;
+    },
+
+    async deleteEquipment(id) {
+      const { error } = await client.from("equipment").delete().eq("id", id);
+      check(error, "Could not remove equipment");
+    },
+
+    async listStaff() {
+      const { data, error } = await client
+        .from("staff")
+        .select("*")
+        .order("role", { ascending: true })
+        .order("id", { ascending: true });
+      check(error, "Could not load staff");
+      return (data ?? []) as StaffMember[];
+    },
+
+    async saveStaff(member) {
+      const { data, error } = await client.from("staff").upsert(member, { onConflict: "id" }).select().single();
+      check(error, "Could not save staff member");
+      return data as StaffMember;
+    },
+
+    async deleteStaff(id) {
+      const { error } = await client.from("staff").delete().eq("id", id);
+      check(error, "Could not remove staff member");
+    },
+
+    async listStaffEvents(limit = STAFF_EVENT_LIMIT) {
+      const { data, error } = await client
+        .from("staff_availability_events")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .limit(limit);
+      check(error, "Could not load availability history");
+      return (data ?? []) as StaffAvailabilityEvent[];
+    },
+
+    async addStaffEvent(event) {
+      const { data, error } = await client.from("staff_availability_events").insert(event).select().single();
+      check(error, "Could not record availability change");
+      return data as StaffAvailabilityEvent;
+    },
+
+    async listStockRequirements() {
+      const { data, error } = await client.from("patient_stock_requirements").select("*");
+      check(error, "Could not load stock requirements");
+      return (data ?? []) as PatientStockRequirementRow[];
+    },
+
+    async setStockRequirements(patientId, requirements) {
+      const { error: delError } = await client.from("patient_stock_requirements").delete().eq("patient_id", patientId);
+      check(delError, "Could not update stock requirements");
+      const lines = mergeRequirements(requirements);
+      if (lines.length === 0) return;
+      const { error } = await client.from("patient_stock_requirements").insert(
+        lines.map((r) => ({
+          patient_id: patientId,
+          item_type: r.item_type,
+          item_id: r.item_id,
+          quantity_required: r.quantity,
+        })),
+      );
+      check(error, "Could not save stock requirements");
+    },
   };
 }
 
@@ -446,6 +604,11 @@ const KEYS = {
   runs: "waitless.runs",
   results: "waitless.results",
   allocations: "waitless.allocations",
+  medicines: "waitless.medicines",
+  equipment: "waitless.equipment",
+  staff: "waitless.staff",
+  staffEvents: "waitless.staff-events",
+  stockRequirements: "waitless.stock-requirements",
 } as const;
 
 export function createLocalDatabase(store: KeyValueStore = browserStore()): Database {
@@ -501,10 +664,15 @@ export function createLocalDatabase(store: KeyValueStore = browserStore()): Data
         KEYS.patients,
         read<PatientRow>(KEYS.patients).filter((p) => p.patient_id !== patientId),
       );
+      write(
+        KEYS.stockRequirements,
+        read<PatientStockRequirementRow>(KEYS.stockRequirements).filter((r) => r.patient_id !== patientId),
+      );
     },
 
     async clearPatients() {
       write(KEYS.patients, []);
+      write(KEYS.stockRequirements, []);
     },
 
     async setPatientStatus(patientId, status) {
@@ -598,6 +766,74 @@ export function createLocalDatabase(store: KeyValueStore = browserStore()): Data
           (a) => a.simulation_run_id === id,
         ),
       };
+    },
+
+    async listMedicines() {
+      return read<Medicine>(KEYS.medicines).sort((a, b) => a.name.localeCompare(b.name));
+    },
+
+    async saveMedicine(medicine) {
+      const rows = read<Medicine>(KEYS.medicines);
+      write(KEYS.medicines, rows.some((r) => r.id === medicine.id) ? rows.map((r) => (r.id === medicine.id ? medicine : r)) : [...rows, medicine]);
+      return medicine;
+    },
+
+    async deleteMedicine(id) {
+      write(KEYS.medicines, read<Medicine>(KEYS.medicines).filter((r) => r.id !== id));
+    },
+
+    async listEquipment() {
+      return read<Equipment>(KEYS.equipment).sort((a, b) => a.name.localeCompare(b.name));
+    },
+
+    async saveEquipment(equipment) {
+      const rows = read<Equipment>(KEYS.equipment);
+      write(KEYS.equipment, rows.some((r) => r.id === equipment.id) ? rows.map((r) => (r.id === equipment.id ? equipment : r)) : [...rows, equipment]);
+      return equipment;
+    },
+
+    async deleteEquipment(id) {
+      write(KEYS.equipment, read<Equipment>(KEYS.equipment).filter((r) => r.id !== id));
+    },
+
+    async listStaff() {
+      return read<StaffMember>(KEYS.staff).sort((a, b) => a.role.localeCompare(b.role) || a.id.localeCompare(b.id));
+    },
+
+    async saveStaff(member) {
+      const rows = read<StaffMember>(KEYS.staff);
+      write(KEYS.staff, rows.some((r) => r.id === member.id) ? rows.map((r) => (r.id === member.id ? member : r)) : [...rows, member]);
+      return member;
+    },
+
+    async deleteStaff(id) {
+      write(KEYS.staff, read<StaffMember>(KEYS.staff).filter((r) => r.id !== id));
+    },
+
+    async listStaffEvents(limit = STAFF_EVENT_LIMIT) {
+      return read<StaffAvailabilityEvent>(KEYS.staffEvents).slice().reverse().slice(0, limit);
+    },
+
+    async addStaffEvent(event) {
+      const row: StaffAvailabilityEvent = { ...event, id: newId(), created_at: new Date().toISOString() };
+      write(KEYS.staffEvents, [...read<StaffAvailabilityEvent>(KEYS.staffEvents), row].slice(-STAFF_EVENT_LIMIT));
+      return row;
+    },
+
+    async listStockRequirements() {
+      return read<PatientStockRequirementRow>(KEYS.stockRequirements);
+    },
+
+    async setStockRequirements(patientId, requirements) {
+      const others = read<PatientStockRequirementRow>(KEYS.stockRequirements).filter((r) => r.patient_id !== patientId);
+      const rows: PatientStockRequirementRow[] = mergeRequirements(requirements).map((r) => ({
+        id: newId(),
+        patient_id: patientId,
+        item_type: r.item_type,
+        item_id: r.item_id,
+        quantity_required: r.quantity,
+      }));
+      write(KEYS.stockRequirements, [...others, ...rows]);
     },
   };
 }

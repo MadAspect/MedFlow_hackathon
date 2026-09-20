@@ -15,6 +15,34 @@ export type ResourceRequest = Partial<Record<ResourceKey, number>>;
 
 export type Strategy = "fcfs" | "urgency" | "dynamic" | "hazard";
 
+export type StockItemType = "medicine" | "equipment";
+
+/** A medicine quantity consumed, or equipment units held for the length of the treatment. */
+export interface StockRequirement {
+  item_type: StockItemType;
+  item_id: string;
+  quantity: number;
+}
+
+/**
+ * Inventory snapshot a run works on. Present only when stock constraints are enabled; the run
+ * never writes back to the database, so re-running a scenario always starts from the same stock.
+ */
+export interface StockConstraints {
+  medicines: Record<string, { name: string; quantity: number }>;
+  /** Operable units (0 while the item is under maintenance). */
+  equipment: Record<string, { name: string; units: number }>;
+}
+
+/** A doctor/nurse coming on or off duty at a simulation minute. Never touches running treatments. */
+export interface AvailabilityChange {
+  time: number;
+  resource: ResourceKey;
+  delta: number;
+  staff_id?: string;
+  reason?: string;
+}
+
 export interface SimPatient {
   id: string;
   condition: string;
@@ -25,6 +53,7 @@ export interface SimPatient {
   emergency?: boolean;
   appointment?: boolean;
   ambulance?: { alert_time: number };
+  stock_requirements?: StockRequirement[];
 }
 
 export interface Weights {
@@ -50,6 +79,8 @@ export interface SimParams {
   reservation?: boolean;
   protectAppointments?: boolean;
   preAlert?: boolean;
+  stock?: StockConstraints;
+  availability?: AvailabilityChange[];
 }
 
 export interface ScoreBreakdown {
@@ -74,6 +105,14 @@ export interface HazardBreakdown {
 export interface SkippedCandidate {
   id: string;
   blocked_by: ResourceKey[];
+  stock_blocked_by?: string[];
+}
+
+export interface StockBlock {
+  item_type: StockItemType;
+  item_id: string;
+  name: string;
+  minutes: number;
 }
 
 export interface Decision {
@@ -86,6 +125,8 @@ export interface Decision {
   skipped: SkippedCandidate[];
   blocked_minutes?: number;
   binding_resource?: ResourceKey | null;
+  stock_used?: StockRequirement[];
+  stock_blocked?: StockBlock[];
   appointment_hold?: {
     minutes: number;
     appointment_id: string;
@@ -111,6 +152,7 @@ export interface PatientOutcome {
   appointment: boolean;
   ambulance?: boolean;
   alert_time?: number | null;
+  stock_requirements?: StockRequirement[];
   status: OutcomeStatus;
   start_time: number | null;
   end_time: number | null;
@@ -177,6 +219,26 @@ export interface SimWarning {
   time?: number;
 }
 
+export interface StockOutcome {
+  medicines: {
+    item_id: string;
+    name: string;
+    initial: number;
+    consumed: number;
+    remaining: number;
+    blocked_patients: number;
+    blocked_minutes: number;
+  }[];
+  equipment: {
+    item_id: string;
+    name: string;
+    units: number;
+    peak_in_use: number;
+    blocked_patients: number;
+    blocked_minutes: number;
+  }[];
+}
+
 export interface SimulationOutput {
   strategy: Strategy;
   params: SimParams;
@@ -189,6 +251,7 @@ export interface SimulationOutput {
   error: string | null;
   isPlaceholder: boolean;
   engine: string;
+  stock?: StockOutcome;
 }
 
 export const PLACEHOLDER_NOTICE =

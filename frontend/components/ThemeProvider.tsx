@@ -17,8 +17,8 @@ function subscribePreference(onChange: () => void) {
   const onStorage = (e: StorageEvent) => {
     if (e.key === null || e.key === THEME_STORAGE_KEY) onChange();
   };
-  window.addEventListener("storage", onStorage); // another tab changed it
-  window.addEventListener(CHANGE_EVENT, onChange); // this tab changed it
+  window.addEventListener("storage", onStorage);
+  window.addEventListener(CHANGE_EVENT, onChange);
   return () => {
     window.removeEventListener("storage", onStorage);
     window.removeEventListener(CHANGE_EVENT, onChange);

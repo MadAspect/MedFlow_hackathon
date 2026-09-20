@@ -7,6 +7,8 @@ import {
   type ResourceConfigRow,
   type StoredRun,
 } from "./database";
+import { requirementsByPatient, stockConstraintsEnabled, toStockConstraints } from "./inventory";
+import { effectiveResources } from "./staff";
 import {
   objectiveScore,
   runEngine,
@@ -14,9 +16,11 @@ import {
   type Metrics,
   type OutcomeStatus,
   type PatientOutcome,
+  type ResourceSet,
   type SimParams,
   type SimPatient,
   type SimulationOutput,
+  type StockRequirement,
 } from "./simulation";
 
 export class RunPreconditionError extends Error {
@@ -26,7 +30,10 @@ export class RunPreconditionError extends Error {
   }
 }
 
-export function toSimPatients(rows: PatientRow[]): SimPatient[] {
+export function toSimPatients(
+  rows: PatientRow[],
+  stockRequirements: Map<string, StockRequirement[]> = new Map(),
+): SimPatient[] {
   return rows
     .filter((p) => p.status !== "cancelled")
     .map((p) => ({
@@ -38,7 +45,16 @@ export function toSimPatients(rows: PatientRow[]): SimPatient[] {
       required_resources: p.required_resources,
       ...(p.appointment ? { appointment: true } : {}),
       ...(p.alert_time != null ? { ambulance: { alert_time: p.alert_time } } : {}),
+      ...(stockRequirements.has(p.patient_id) ? { stock_requirements: stockRequirements.get(p.patient_id) } : {}),
     }));
+}
+
+export interface RunOptions {
+  /**
+   * Use these resources as they are. A live re-run passes the resources the running simulation
+   * started with, so the start of the run is exactly as it was and only the new event differs.
+   */
+  resources?: ResourceSet;
 }
 
 export function patientStatusFromOutcome(status: OutcomeStatus): PatientStatus {
@@ -55,20 +71,38 @@ export async function executeRun(
   db: Database,
   params: Partial<SimParams>,
   mode?: EngineMode,
+  options: RunOptions = {},
 ): Promise<RunResult> {
   const [patientRows, resourceRow] = await Promise.all([
     db.listPatients(),
     db.getLatestResources(),
   ]);
-  const simPatients = toSimPatients(patientRows);
-  if (simPatients.length === 0) {
+  if (patientRows.every((p) => p.status === "cancelled")) {
     throw new RunPreconditionError("Add or load patients before running a simulation.");
   }
-  if (!resourceRow) {
+  if (!resourceRow && !options.resources) {
     throw new RunPreconditionError("Save a resource configuration before running a simulation.");
   }
 
-  const output = runEngine(simPatients, resourcesFromRow(resourceRow), params, mode);
+  // Stock is opt-in (see stockConstraintsEnabled). A run that already carries a snapshot, which is
+  // what a live re-run passes, keeps it, so the inventory it started with never shifts underneath it.
+  let stockRequirements = new Map<string, StockRequirement[]>();
+  let runParams = params;
+  if (stockConstraintsEnabled() || params.stock !== undefined) {
+    const [medicines, equipment, requirementRows] = await Promise.all([
+      db.listMedicines(),
+      db.listEquipment(),
+      db.listStockRequirements(),
+    ]);
+    stockRequirements = requirementsByPatient(requirementRows);
+    if (params.stock === undefined) runParams = { ...params, stock: toStockConstraints(medicines, equipment) };
+  }
+  const simPatients = toSimPatients(patientRows, stockRequirements);
+
+  // Doctors and nurses who are not available take a unit off the configured capacity from minute 0.
+  const resources = options.resources ?? effectiveResources(resourcesFromRow(resourceRow!), await db.listStaff());
+
+  const output = runEngine(simPatients, resources, runParams, mode);
   const stored = await db.saveSimulation(output);
 
   const outcomes = new Map(output.patients.map((o) => [o.id, o]));
@@ -93,8 +127,14 @@ export async function resetPatientStatuses(db: Database): Promise<PatientRow[]> 
   return reset;
 }
 
-function outcomeFromAllocation(a: AllocationRow, appointments: Set<string>, ambulances: Record<string, number>): PatientOutcome {
+function outcomeFromAllocation(
+  a: AllocationRow,
+  appointments: Set<string>,
+  ambulances: Record<string, number>,
+  stockRequirements: Record<string, StockRequirement[]>,
+): PatientOutcome {
   return {
+    ...(stockRequirements[a.patient_id] ? { stock_requirements: stockRequirements[a.patient_id] } : {}),
     id: a.patient_id,
     condition: a.condition,
     arrival_time: a.arrival_time,
@@ -119,7 +159,8 @@ export function outputFromStoredRun(stored: StoredRun): SimulationOutput | null 
   // Which patients were booked is kept in the run's parameters (no extra table column needed).
   const appointments = new Set(stored.run.parameters.appointments ?? []);
   const ambulances = stored.run.parameters.ambulances ?? {};
-  const patients = stored.allocations.map((a) => outcomeFromAllocation(a, appointments, ambulances));
+  const stockRequirements = stored.run.parameters.stock_requirements ?? {};
+  const patients = stored.allocations.map((a) => outcomeFromAllocation(a, appointments, ambulances, stockRequirements));
   const params = stored.run.parameters.params;
   const base = stored.result.metrics;
   const saved: Partial<Metrics> = base;
@@ -165,6 +206,7 @@ export function outputFromStoredRun(stored: StoredRun): SimulationOutput | null 
     error,
     isPlaceholder: stored.run.is_placeholder,
     engine: stored.run.engine,
+    ...(stored.run.parameters.stock_outcome ? { stock: stored.run.parameters.stock_outcome } : {}),
   };
 }
 

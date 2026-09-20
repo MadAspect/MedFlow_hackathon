@@ -26,8 +26,23 @@ function resourceSummary(p: PatientRow): string {
 }
 
 export function PatientTable() {
-  const { patients, deletePatient, cancelPatient } = useStore();
+  const { patients, deletePatient, cancelPatient, medicines, equipment, stockRequirements } = useStore();
   const [query, setQuery] = useState("");
+
+  // What each patient has asked for, by name, so the list reads "Ventilator ×1, Gloves ×4".
+  const needsByPatient = useMemo(() => {
+    const names = new Map<string, string>([
+      ...medicines.map((m) => [`medicine:${m.id}`, m.name] as const),
+      ...equipment.map((e) => [`equipment:${e.id}`, e.name] as const),
+    ]);
+    const byPatient = new Map<string, string[]>();
+    for (const r of stockRequirements) {
+      const list = byPatient.get(r.patient_id) ?? [];
+      list.push(`${names.get(`${r.item_type}:${r.item_id}`) ?? `${r.item_id} (removed)`} ×${r.quantity_required}`);
+      byPatient.set(r.patient_id, list);
+    }
+    return byPatient;
+  }, [medicines, equipment, stockRequirements]);
 
   const rows = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -66,10 +81,10 @@ export function PatientTable() {
         <EmptyState>No patients match “{query}”.</EmptyState>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[900px] text-left text-sm">
+          <table className="w-full min-w-[1100px] text-left text-sm">
             <thead className="border-b border-slate-200 text-xs tracking-wide text-slate-600 uppercase">
               <tr>
-                {["Patient ID", "Condition", "Arrival", "Urgency", "Treatment", "Required resources", "Status", "Priority", "Created", ""].map((h) => (
+                {["Patient ID", "Condition", "Arrival", "Urgency", "Treatment", "Required resources", "Medicine & equipment", "Status", "Priority", "Created", ""].map((h) => (
                   <th key={h} scope="col" className="px-2 py-2 font-semibold">
                     {h}
                   </th>
@@ -99,6 +114,7 @@ export function PatientTable() {
                   </td>
                   <td className="px-2 py-2 tabular-nums">{p.treatment_time} min</td>
                   <td className="px-2 py-2 text-xs">{resourceSummary(p)}</td>
+                  <td className="max-w-56 px-2 py-2 text-xs">{needsByPatient.get(p.patient_id)?.join(", ") ?? <span className="text-slate-400">None requested</span>}</td>
                   <td className="px-2 py-2">{statusBadge(p.status)}</td>
                   <td className="px-2 py-2 tabular-nums">{p.priority_score.toFixed(1)}</td>
                   <td className="px-2 py-2 text-xs whitespace-nowrap text-slate-600">{new Date(p.created_at).toLocaleString()}</td>

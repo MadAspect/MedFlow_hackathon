@@ -36,7 +36,7 @@ const EPS = 1e-9;
 function bestOf(rows: ComparisonRow[], key: BestKey, higherIsBetter: boolean): Strategy[] {
   const values = rows.map((r) => r[key]);
   const target = higherIsBetter ? Math.max(...values) : Math.min(...values);
-  if (values.every((v) => Math.abs(v - target) < EPS)) return []; // nothing to highlight
+  if (values.every((v) => Math.abs(v - target) < EPS)) return [];
   return rows.filter((r) => Math.abs(r[key] - target) < EPS).map((r) => r.strategy);
 }
 

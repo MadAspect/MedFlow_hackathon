@@ -16,9 +16,12 @@ import {
   stageAt,
   type FlowStage,
   type PatientOutcome,
+  type ResourceSet,
   type SimulationOutput,
   type SimWarning,
 } from "@/lib/simulation";
+import type { StaffMember } from "@/lib/staff";
+import { doctorWorkloads, type StockLine } from "@/lib/workload";
 
 export function WarningsList({ warnings }: { warnings: SimWarning[] }) {
   if (warnings.length === 0) return <p className="text-sm text-slate-500">No warnings or bottlenecks in this run.</p>;
@@ -51,14 +54,109 @@ function resourceText(p: PatientOutcome) {
     .join(", ");
 }
 
+function StockChip({ line }: { line: StockLine }) {
+  const equipment = line.item_type === "equipment";
+  return (
+    <Badge tone={line.left === 0 ? "red" : "grey"}>
+      {line.name} ×{line.quantity} · {equipment ? `${line.left} of ${line.total} free` : `${line.left} of ${line.total} left`}
+    </Badge>
+  );
+}
+
+function DoctorsAtWork({
+  output,
+  staff,
+  resources,
+  t,
+  onSelect,
+}: {
+  output: SimulationOutput;
+  staff: StaffMember[];
+  resources?: ResourceSet;
+  t: number;
+  onSelect: (id: string) => void;
+}) {
+  const doctors = doctorWorkloads(output, staff, t, resources);
+  const tracked = output.params.stock !== undefined;
+  const busy = doctors.filter((d) => d.state === "treating").length;
+  return (
+    <Card
+      title="Doctors at work"
+      actions={
+        <span className="flex items-center gap-2 text-xs text-slate-500">
+          <Badge tone={busy > 0 ? "yellow" : "grey"}>
+            {busy} of {doctors.length} treating
+          </Badge>
+          <span className="tabular-nums">{slotLabel(t)}</span>
+        </span>
+      }
+    >
+      {doctors.length === 0 ? (
+        <EmptyState>No doctors are on duty at this minute.</EmptyState>
+      ) : (
+        <ul className="grid gap-2 md:grid-cols-2" aria-label="What each doctor is doing">
+          {doctors.map((d) => (
+            <li key={d.id} className="rounded-lg border border-slate-200 bg-surface px-3 py-2 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-semibold text-slate-900">
+                  {d.name}
+                  {d.detail && <span className="ml-1 font-normal text-slate-500">{d.detail}</span>}
+                </span>
+                <Badge tone={d.state === "treating" ? "yellow" : d.state === "free" ? "green" : "grey"}>
+                  {d.state === "treating" ? "Treating" : d.state === "free" ? "Free" : "Off duty"}
+                </Badge>
+              </div>
+              {d.tasks.map((task) => (
+                <div key={task.patient.id} className="mt-2 border-t border-slate-100 pt-2">
+                  <button type="button" onClick={() => onSelect(task.patient.id)} className="flex w-full items-center justify-between gap-2 text-left">
+                    <span className="font-semibold text-slate-900">
+                      {task.patient.id} <span className="font-normal text-slate-600">{task.patient.condition}</span>
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      <Badge tone={task.patient.urgency >= 4 ? "red" : task.patient.urgency === 3 ? "yellow" : "grey"}>U{task.patient.urgency}</Badge>
+                      <span className="tabular-nums text-slate-500">{task.minutes_left} min left</span>
+                    </span>
+                  </button>
+                  <p className="mt-1 text-slate-500">Using: {resourceText(task.patient)}</p>
+                  {!tracked ? (
+                    <p className="mt-1 text-slate-400">Stock is not tracked in this run.</p>
+                  ) : task.stock.length === 0 ? (
+                    <p className="mt-1 text-slate-400">No medicines or equipment requested.</p>
+                  ) : (
+                    <ul className="mt-1.5 flex flex-wrap gap-1.5" aria-label={`Stock used for ${task.patient.id}`}>
+                      {task.stock.map((line) => (
+                        <li key={`${line.item_type}:${line.item_id}`}>
+                          <StockChip line={line} />
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              ))}
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="mt-2 text-xs text-slate-500">
+        Medicine counts drop when a treatment starts and stay down; equipment is held until the treatment ends. Which doctor has which patient is a display assignment: the engine schedules doctors as a pool.
+      </p>
+    </Card>
+  );
+}
+
 export function HospitalView({
   output,
   viewTime,
   setViewTime,
+  staff = [],
+  resources,
 }: {
   output: SimulationOutput | null;
   viewTime: number;
   setViewTime: (t: number) => void;
+  staff?: StaffMember[];
+  /** Headcount from the Resources page; the run's own resources already have unavailable staff taken off. */
+  resources?: ResourceSet;
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
@@ -253,6 +351,8 @@ export function HospitalView({
 
       <PatientTimeline output={output} viewTime={t} setViewTime={setViewTime} selectedId={selected?.id ?? null} onSelect={setSelectedId} />
 
+      <DoctorsAtWork output={output} staff={staff} resources={resources} t={t} onSelect={setSelectedId} />
+
       <div className="grid gap-4 lg:grid-cols-2">
         <Card title="Being treated now" actions={<span className="text-xs text-slate-500 tabular-nums">{slotLabel(t)}</span>}>
           {flow.in_treatment.length === 0 ? (
@@ -372,9 +472,27 @@ export function HospitalView({
                   Waited {d.blocked_minutes} min for {RESOURCE_LABELS[d.binding_resource].toLowerCase()}.
                 </p>
               )}
+              {d.stock_used && d.stock_used.length > 0 && (
+                <p className="text-xs text-slate-500">
+                  Took from stock:{" "}
+                  {d.stock_used
+                    .map((r) => `${output?.params.stock?.[r.item_type === "medicine" ? "medicines" : "equipment"][r.item_id]?.name ?? r.item_id} ×${r.quantity}`)
+                    .join(", ")}
+                  .
+                </p>
+              )}
+              {d.stock_blocked?.map((b) => (
+                <p key={`${b.item_type}:${b.item_id}`} className="text-xs text-amber-700">
+                  Waited {b.minutes} min for {b.name} to be in stock.
+                </p>
+              ))}
               {d.skipped.length > 0 && (
                 <p className="text-xs text-slate-500">
-                  Skipped because resources were short: {d.skipped.map((s) => `${s.id} (${s.blocked_by.map((k) => RESOURCE_LABELS[k]).join(", ")})`).join("; ")}.
+                  Skipped because resources or stock were short:{" "}
+                  {d.skipped
+                    .map((s) => `${s.id} (${[...s.blocked_by.map((k) => RESOURCE_LABELS[k]), ...(s.stock_blocked_by ?? [])].join(", ")})`)
+                    .join("; ")}
+                  .
                 </p>
               )}
             </div>

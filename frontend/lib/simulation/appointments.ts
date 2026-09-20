@@ -3,12 +3,20 @@ import { RESOURCE_KEYS, type ResourceKey, type ResourceRequest, type ResourceSet
 
 export const APPOINTMENT_GRACE = 10;
 
-export const DAY_START_MINUTES = 8 * 60;
-
 export const SLOT_STEP = 5;
 
+let clockStart = 8 * 60;
+
+export function minutesOfDay(date: Date): number {
+  return date.getHours() * 60 + date.getMinutes();
+}
+
+export function setClockStart(minutes: number): void {
+  clockStart = ((Math.round(minutes) % 1440) + 1440) % 1440;
+}
+
 export function slotLabel(minute: number): string {
-  const total = DAY_START_MINUTES + Math.max(0, Math.round(minute));
+  const total = clockStart + Math.max(0, Math.round(minute));
   const days = Math.floor(total / 1440);
   const inDay = total % 1440;
   const hh = String(Math.floor(inDay / 60)).padStart(2, "0");

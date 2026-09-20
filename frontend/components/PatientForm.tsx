@@ -2,6 +2,7 @@
 
 import { Check, FlaskConical, Trash2, UserPlus } from "lucide-react";
 import { useState } from "react";
+import { StockNeeds, useStockDraft } from "./StockNeeds";
 import { Button, Card, Field, inputClass, cx } from "./ui";
 import { CONDITIONS } from "@/lib/constants";
 import { useStore } from "@/lib/store";
@@ -28,6 +29,7 @@ export function PatientForm() {
   const [errors, setErrors] = useState<FieldErrors>({});
   const [added, setAdded] = useState(false);
   const [busy, setBusy] = useState(false);
+  const stock = useStockDraft(condition, Number(urgency));
 
   const toggle = (key: ResourceKey, on: boolean) =>
     setNeeds((prev) => {
@@ -56,9 +58,10 @@ export function PatientForm() {
     }
     setErrors({});
     setBusy(true);
-    const ok = await addPatient(result.data);
+    const ok = await addPatient(result.data, stock.value);
     setBusy(false);
     if (ok) {
+      stock.reset();
       setAdded(true);
       window.setTimeout(() => setAdded(false), 1800);
       setPatientId(nextId([...patients.map((p) => p.patient_id), result.data.patient_id]));
@@ -128,6 +131,8 @@ export function PatientForm() {
           </div>
           {err("required_resources") && <p className="mt-1 text-xs font-medium text-red-700">{err("required_resources")}</p>}
         </fieldset>
+
+        <StockNeeds draft={stock} />
 
         <div className="flex flex-wrap items-center gap-2">
           <Button type="submit" disabled={busy} className={cx(added && "!bg-emerald-600 !border-emerald-600")}>

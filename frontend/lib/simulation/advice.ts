@@ -413,7 +413,6 @@ export function analyse(
   const outputs = runAllStrategies(patients, resources, params);
   const verdict = recommendStrategy(outputs);
   const recommendation = recommendResource(patients, resources, params, verdict.strategy);
-  // With appointments, also run the winner with slot protection the other way round to show what it buys.
   const appointmentAlt = patients.some((p) => p.appointment)
     ? runSimulation(patients, resources, {
         ...params,
@@ -421,7 +420,6 @@ export function analyse(
         protectAppointments: params.protectAppointments === false,
       })
     : null;
-  // With ambulances, also run the winner with pre-alerts the other way round to show what they buy.
   const ambulanceAlt = patients.some((p) => p.ambulance)
     ? runSimulation(patients, resources, {
         ...params,

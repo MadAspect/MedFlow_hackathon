@@ -24,5 +24,8 @@ export default defineConfig({
     url: `http://localhost:${PORT}`,
     reuseExistingServer: true,
     timeout: 120_000,
+    // The tests clear and rewrite patients, so they must never reach a real Supabase project:
+    // blank credentials keep the app on browser storage even when .env.local has real ones.
+    env: { NEXT_PUBLIC_SUPABASE_URL: "", NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "" },
   },
 });
