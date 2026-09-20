@@ -118,7 +118,3 @@ Tech stack: Next.js 16, React 19, TypeScript, Tailwind CSS 4, Supabase (Postgres
 - The what-if search tests one extra unit of each resource. It reports the best result within that small search space, not a proven optimum.
 - The demo database policy is open (no authentication).
 - In browser-storage mode only the latest 25 runs are kept.
-
-## AI tools used
-
-Built with Claude Code (Anthropic Claude). No AI model is called at runtime, and none produces the priority scores, the simulation, the comparison or the explanations.
