@@ -1,3 +1,5 @@
+import { AMBULANCE_GRACE } from "./ambulance";
+import { APPOINTMENT_GRACE } from "./appointments";
 import { RESOURCE_LABELS, RESOURCE_SINGULAR, emptyResourceSet } from "./resources";
 import {
   RESOURCE_KEYS,
@@ -16,11 +18,6 @@ export function average(values: number[]): number {
   return values.reduce((a, b) => a + b, 0) / values.length;
 }
 
-/**
- * Utilization of one resource: used unit-minutes divided by the nominal
- * capacity-minutes (capacity × duration). Returns 0 when capacity or duration
- * is zero, and never exceeds 1.
- */
 export function utilization(
   usedUnitMinutes: number,
   capacity: number,
@@ -30,33 +27,30 @@ export function utilization(
   return Math.min(1, usedUnitMinutes / (capacity * duration));
 }
 
-/** Weights of the objective score. The lower the score, the better the run. */
 export const OBJECTIVE_WEIGHTS = {
   totalWaiting: 1.0,
   criticalWaiting: 4.0,
   patientsRemaining: 10000.0,
   resourceOverload: 10000.0,
   maxWaiting: 0.5,
+  completionTime: 0.5,
 } as const;
 
-/**
- *   objective = 1·totalWaitingTime + 4·criticalPatientWaitingTime
- *             + 10000·patientsRemaining + 10000·resourceOverload
- *             + 0.5·maximumWaitingTime
- */
 export function objectiveScore(m: {
   total_waiting_time: number;
   critical_wait_total: number;
   patients_remaining: number;
   resource_overload: number;
   maximum_wait: number;
+  completion_time: number;
 }): number {
   return (
     OBJECTIVE_WEIGHTS.totalWaiting * m.total_waiting_time +
     OBJECTIVE_WEIGHTS.criticalWaiting * m.critical_wait_total +
     OBJECTIVE_WEIGHTS.patientsRemaining * m.patients_remaining +
     OBJECTIVE_WEIGHTS.resourceOverload * m.resource_overload +
-    OBJECTIVE_WEIGHTS.maxWaiting * m.maximum_wait
+    OBJECTIVE_WEIGHTS.maxWaiting * m.maximum_wait +
+    OBJECTIVE_WEIGHTS.completionTime * m.completion_time
   );
 }
 
@@ -65,13 +59,9 @@ export interface MetricsInput {
   timeline: TimelinePoint[];
   resources: ResourceSet;
   params: SimParams;
-  /** Patient-minutes of queueing attributed to each resource as the binding shortage. */
   blockedPatientMinutes: ResourceSet;
-  /** Distinct patients whose binding shortage was each resource. */
   blockedPatientCounts?: ResourceSet;
-  /** Distinct patients blocked at least once by a resource shortage. */
   resourceConflicts: number;
-  /** Minute the last treatment finished; defaults to the latest recorded end time. */
   actualCompletionTime?: number;
 }
 
@@ -123,7 +113,25 @@ export function computeMetrics(input: MetricsInput): Metrics {
   const maximum_wait = arrived.reduce((m, o) => Math.max(m, o.wait_time), 0);
   const patients_remaining = outcomes.length - treated.length;
 
+  // Appointments: wait_time is how long after the booked slot treatment started.
+  const booked = arrived.filter((o) => o.appointment);
+  const notBooked = arrived.filter((o) => !o.appointment && !o.ambulance);
+  const bookedDelays = booked.map((o) => o.wait_time);
+  // Ambulances: wait_time is how long after reaching the hospital treatment started.
+  const byAmbulance = arrived.filter((o) => o.ambulance === true);
+  const ambulanceWaits = byAmbulance.map((o) => o.wait_time);
+
   return {
+    ambulance_total: byAmbulance.length,
+    ambulance_on_arrival: byAmbulance.filter((o) => o.status === "treated" && o.wait_time <= AMBULANCE_GRACE).length,
+    ambulance_average_wait: average(ambulanceWaits),
+    ambulance_max_wait: ambulanceWaits.reduce((m, w) => Math.max(m, w), 0),
+    ambulance_average_lead: average(byAmbulance.map((o) => o.arrival_time - (o.alert_time ?? o.arrival_time))),
+    appointments_total: booked.length,
+    appointments_on_time: booked.filter((o) => o.status === "treated" && o.wait_time <= APPOINTMENT_GRACE).length,
+    appointment_average_delay: average(bookedDelays),
+    appointment_max_delay: bookedDelays.reduce((m, d) => Math.max(m, d), 0),
+    walk_in_average_wait: average(notBooked.map((o) => o.wait_time)),
     total_patients: outcomes.length,
     patients_arrived: arrived.length,
     patients_treated: treated.length,
@@ -141,6 +149,7 @@ export function computeMetrics(input: MetricsInput): Metrics {
       patients_remaining,
       resource_overload: overload,
       maximum_wait,
+      completion_time: actualCompletionTime,
     }),
     queue_length_final: last ? last.queue_length : 0,
     peak_queue_length: peak,
@@ -162,11 +171,9 @@ export interface WarningInput {
   resources: ResourceSet;
   params: SimParams;
   surgeAdded: number;
-  /** Set when the run could not treat every patient. */
   error?: string | null;
 }
 
-/** Human-readable warnings and bottlenecks derived from calculated output. */
 export function buildWarnings(input: WarningInput): SimWarning[] {
   const { outcomes, timeline, metrics, resources, params } = input;
   const warnings: SimWarning[] = [];
@@ -220,7 +227,8 @@ export function buildWarnings(input: WarningInput): SimWarning[] {
       level: "warning",
       code: "failure",
       time: params.failureStart,
-      message: `Resource failure: ${failedUnits} × ${RESOURCE_SINGULAR[params.failedResource]} taken offline from minute ${params.failureStart} (a unit in use goes offline when its treatment finishes).`,
+      // Doctors and nurses going offline is a staff shortage; everything else is an equipment/space failure.
+      message: `${params.failedResource === "doctor" || params.failedResource === "nurse" ? "Staff shortage" : "Resource failure"}: ${failedUnits} × ${RESOURCE_SINGULAR[params.failedResource]} unavailable from minute ${params.failureStart} (a unit in use goes offline when its treatment finishes).`,
     });
   }
 
@@ -287,6 +295,26 @@ export function buildWarnings(input: WarningInput): SimWarning[] {
     });
   }
 
+  const bookedCount = metrics.appointments_total ?? 0;
+  const lateCount = bookedCount - (metrics.appointments_on_time ?? 0);
+  if (bookedCount > 0 && lateCount > 0) {
+    warnings.push({
+      level: "warning",
+      code: "appointments_late",
+      message: `${lateCount} of ${bookedCount} booked appointment(s) started more than ${APPOINTMENT_GRACE} minutes after their slot (average delay ${Math.round((metrics.appointment_average_delay ?? 0) * 10) / 10} min).`,
+    });
+  }
+
+  const ambulanceCount = metrics.ambulance_total ?? 0;
+  const ambulanceLate = ambulanceCount - (metrics.ambulance_on_arrival ?? 0);
+  if (ambulanceCount > 0 && ambulanceLate > 0) {
+    warnings.push({
+      level: "warning",
+      code: "ambulance_late",
+      message: `${ambulanceLate} of ${ambulanceCount} ambulance patient(s) waited more than ${AMBULANCE_GRACE} minutes after reaching the hospital (average ${Math.round((metrics.ambulance_average_wait ?? 0) * 10) / 10} min).`,
+    });
+  }
+
   if (metrics.peak_queue_length >= 5) {
     warnings.push({
       level: "info",
@@ -308,7 +336,6 @@ export function buildWarnings(input: WarningInput): SimWarning[] {
   return warnings;
 }
 
-/** Histogram of patient waiting times (arrived patients only). */
 export function waitHistogram(
   outcomes: PatientOutcome[],
   bucketSize = 10,
@@ -336,7 +363,6 @@ export function statusCounts(outcomes: PatientOutcome[]): Record<OutcomeStatus, 
   return counts;
 }
 
-/** Patient ids in the order treatment started – shows how a policy reorders the queue. */
 export function treatmentOrder(output: Pick<SimulationOutput, "patients">): string[] {
   return output.patients
     .filter((p) => p.decision)
@@ -344,7 +370,6 @@ export function treatmentOrder(output: Pick<SimulationOutput, "patients">): stri
     .map((p) => p.id);
 }
 
-/** Patient state at time t, reconstructed from a finished run. */
 export type FlowStage = "not_arrived" | "waiting" | "in_treatment" | "treated";
 
 export function stageAt(p: PatientOutcome, t: number): FlowStage {
@@ -354,7 +379,6 @@ export function stageAt(p: PatientOutcome, t: number): FlowStage {
   return "in_treatment";
 }
 
-/** Green below 70%, yellow 70–89%, red 90% and above. */
 export function resourceStatus(utilizationFraction: number): "ok" | "warning" | "critical" {
   if (utilizationFraction >= 0.9) return "critical";
   if (utilizationFraction >= 0.7) return "warning";

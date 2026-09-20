@@ -35,9 +35,8 @@ const adviceStyle: Record<AdviceTone, { box: string; Icon: typeof Info; label: s
   blue: { box: "border-blue-500 bg-blue-50 text-blue-900", Icon: Info, label: "Good to know" },
 };
 
-const SERIES_COLORS = { fcfs: CHART_COLORS.grey, urgency: CHART_COLORS.red, dynamic: CHART_COLORS.blue } as const;
+const SERIES_COLORS = { fcfs: CHART_COLORS.grey, urgency: CHART_COLORS.red, dynamic: CHART_COLORS.blue, hazard: CHART_COLORS.green } as const;
 
-/** A change in a metric where lower is better: green when it went down, red when it went up. */
 function Change({ delta, suffix = "" }: { delta: number; suffix?: string }) {
   if (Math.abs(delta) < 0.05) return <span className="block text-xs text-slate-500">no change</span>;
   const good = delta < 0;
@@ -75,7 +74,7 @@ export function StrategyComparison() {
   return (
     <Card
       title="Compare strategies and get advice"
-      description="The same patients, resources, surge and failure settings are run through all three strategies. Everything is calculated from the current data — no AI is used."
+      description="All four strategies on the same patients and settings. Calculated, not AI-generated."
     >
       {!result ? (
         <EmptyState>Add patients and save a resource configuration to compare strategies.</EmptyState>
@@ -270,14 +269,15 @@ export function StrategyComparison() {
                     [STRATEGY_LABELS.fcfs]: +r.average.fcfs.toFixed(1),
                     [STRATEGY_LABELS.urgency]: +r.average.urgency.toFixed(1),
                     [STRATEGY_LABELS.dynamic]: +r.average.dynamic.toFixed(1),
+                    [STRATEGY_LABELS.hazard]: +r.average.hazard.toFixed(1),
                   }))}
                   margin={{ top: 8, right: 12, bottom: 0, left: -12 }}
                 >
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                  <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#475569" }} />
-                  <YAxis unit="m" tick={{ fontSize: 12, fill: "#475569" }} />
-                  <Tooltip />
-                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-line)" />
+                  <XAxis dataKey="name" tick={{ fontSize: 11, fill: "var(--chart-axis-strong)" }} />
+                  <YAxis unit="m" tick={{ fontSize: 12, fill: "var(--chart-axis-strong)" }} />
+                  <Tooltip contentStyle={{ borderRadius: 8, border: "1px solid var(--chart-line)", background: "var(--surface)", color: "var(--foreground)", fontSize: 12 }} cursor={{ fill: "var(--chart-cursor)" }} />
+                  <Legend wrapperStyle={{ fontSize: 12, color: "var(--chart-axis-strong)" }} />
                   {STRATEGIES.map((s) => (
                     <Bar key={s} dataKey={STRATEGY_LABELS[s]} fill={SERIES_COLORS[s]} isAnimationActive={false} />
                   ))}
@@ -299,7 +299,7 @@ export function StrategyComparison() {
                   <div key={s} className="flex flex-wrap items-center gap-1 text-xs">
                     <span className="w-44 shrink-0 font-semibold text-slate-800">{STRATEGY_LABELS[s]}</span>
                     {order.map((id, i) => (
-                      <span key={id} className={cx("rounded border px-1.5 py-0.5 tabular-nums", s !== "fcfs" && base[i] !== id ? "border-blue-400 bg-blue-50 font-semibold text-blue-900" : "border-slate-200 bg-white text-slate-700")}>
+                      <span key={id} className={cx("rounded border px-1.5 py-0.5 tabular-nums", s !== "fcfs" && base[i] !== id ? "border-blue-400 bg-blue-50 font-semibold text-blue-900" : "border-slate-200 bg-surface text-slate-700")}>
                         {id}
                       </span>
                     ))}

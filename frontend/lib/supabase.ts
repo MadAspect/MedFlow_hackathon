@@ -1,13 +1,5 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
-/**
- * Browser Supabase client.
- *
- * Only the publishable / anon key belongs here. Secret and service-role keys
- * bypass Row Level Security and must NEVER be exposed to the browser, so this
- * module refuses to build a client when it detects one.
- */
-
 // NEXT_PUBLIC_* variables must be referenced literally so Next.js can inline them.
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
 const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY?.trim();

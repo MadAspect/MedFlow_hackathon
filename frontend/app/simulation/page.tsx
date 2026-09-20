@@ -1,17 +1,32 @@
 "use client";
 
 import { Download } from "lucide-react";
+import { useState } from "react";
 import { HospitalView, WarningsList } from "@/components/HospitalView";
+import { LiveBar } from "@/components/LiveBar";
 import { MetricsCards } from "@/components/MetricsCards";
 import { ResultsCharts } from "@/components/ResultsCharts";
 import { SimulationControls } from "@/components/SimulationControls";
 import { StrategyComparison } from "@/components/StrategyComparison";
-import { Button, Card, Notice, PageHeader, fmt1 } from "@/components/ui";
+import { Button, Card, Notice, PageHeader, Tabs, fmt1 } from "@/components/ui";
 import { downloadCsv, outcomesToCsv } from "@/lib/export";
 import { useStore } from "@/lib/store";
 import { PLACEHOLDER_NOTICE, RESOURCE_LABELS, STRATEGY_LABELS, type SimulationOutput } from "@/lib/simulation";
 
-/** One plain-language sentence summarising a finished run, built only from its metrics. */
+type Tab = "overview" | "hospital" | "charts" | "compare";
+const TABS: { value: Tab; label: string }[] = [
+  { value: "overview", label: "Overview" },
+  { value: "hospital", label: "Hospital" },
+  { value: "charts", label: "Charts" },
+  { value: "compare", label: "Compare & advice" },
+];
+
+function tabFromHash(): Tab {
+  if (typeof window === "undefined") return "overview";
+  const hash = window.location.hash.replace("#", "");
+  return TABS.some((t) => t.value === hash) ? (hash as Tab) : "overview";
+}
+
 function summarise(output: SimulationOutput): string {
   const m = output.metrics;
   const top = m.bottlenecks[0];
@@ -24,75 +39,64 @@ function summarise(output: SimulationOutput): string {
 }
 
 export default function SimulationPage() {
-  const { current, viewTime, setViewTime } = useStore();
+  const { current, viewTime, setViewTime, liveReplay } = useStore();
   const output = current?.output ?? null;
+  // The page is only rendered once the store is ready (on the client), so reading the URL here is safe.
+  const [tab, setTabState] = useState<Tab>(tabFromHash);
+  const setTab = (next: Tab) => {
+    setTabState(next);
+    window.history.replaceState(null, "", next === "overview" ? window.location.pathname : `#${next}`);
+  };
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       <PageHeader
         title="Simulation"
-        description={
-          <>
-            Choose a scheduling strategy, optionally add an emergency surge or a resource failure, and run. Results are saved to the database. For a
-            side-by-side comparison and advice on making the system more efficient, jump to{" "}
-            <a href="#compare" className="font-medium text-blue-800 underline">
-              Compare strategies and get advice
-            </a>
-            .
-          </>
+        description="Pick a strategy, run it, and watch the hospital minute by minute."
+        actions={
+          output &&
+          !output.isPlaceholder && (
+            <Button variant="secondary" onClick={() => downloadCsv(`waitless-${output.strategy}-run.csv`, outcomesToCsv(output))}>
+              <Download size={15} aria-hidden /> Export CSV
+            </Button>
+          )
         }
       />
-      <SimulationControls />
 
-      <section aria-labelledby="results-heading" className="space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 id="results-heading" className="text-xl font-semibold">
-            Results
-          </h2>
-          {output && !output.isPlaceholder && (
-            <Button variant="secondary" onClick={() => downloadCsv(`medflow-${output.strategy}-run.csv`, outcomesToCsv(output))}>
-              <Download size={15} aria-hidden /> Download patients (CSV)
-            </Button>
-          )}
-        </div>
-        {output && !output.isPlaceholder && <p className="text-base text-slate-900">{summarise(output)}</p>}
-        {output && (
-          <p className="text-sm text-slate-600">
-            {STRATEGY_LABELS[output.strategy]} · planned duration {output.metrics.configured_duration} min · actual completion {output.metrics.actual_completion_time} min
+      <SimulationControls onRan={() => liveReplay && setTab("charts")} />
+
+      {output && (
+        <>
+          <LiveBar />
+          <p className="-mt-2 text-xs text-slate-500">
+            {STRATEGY_LABELS[output.strategy]} · planned {output.metrics.configured_duration} min · finished at minute {output.metrics.actual_completion_time}
             {output.params.emergencySurge ? ` · surge from minute ${output.params.surgeStart}` : ""}
-            {output.params.resourceFailure ? ` · ${output.params.failedResource.replace("_", " ")} failure at minute ${output.params.failureStart}` : ""}
-            {current?.createdAt ? ` · run at ${new Date(current.createdAt).toLocaleString()}` : ""}
+            {output.params.resourceFailure ? ` · ${RESOURCE_LABELS[output.params.failedResource].toLowerCase()} failure at minute ${output.params.failureStart}` : ""}
+            {current?.createdAt ? ` · run ${new Date(current.createdAt).toLocaleString()}` : ""}
           </p>
-        )}
-        {output?.isPlaceholder && <Notice tone="yellow">{PLACEHOLDER_NOTICE}</Notice>}
-        <MetricsCards output={output} />
-        {output && (
-          <Card title="Warnings and bottlenecks">
-            <WarningsList warnings={output.warnings} />
-          </Card>
-        )}
-      </section>
+        </>
+      )}
 
-      <section aria-labelledby="hospital-heading" className="space-y-3">
-        <h2 id="hospital-heading" className="text-xl font-semibold">
-          Interactive hospital view
-        </h2>
-        <HospitalView output={output} viewTime={viewTime} setViewTime={setViewTime} />
-      </section>
-
-      <section aria-labelledby="charts-heading" className="space-y-3">
-        <h2 id="charts-heading" className="text-xl font-semibold">
-          Charts
-        </h2>
-        <ResultsCharts output={output} />
-      </section>
-
-      <section id="compare" aria-labelledby="lab-heading" className="scroll-mt-4 space-y-4">
-        <h2 id="lab-heading" className="sr-only">
-          Compare strategies and get advice
-        </h2>
-        <StrategyComparison />
-      </section>
+      <div>
+        <Tabs label="Simulation results" value={tab} onChange={setTab} tabs={TABS} />
+        <div role="tabpanel" id={`panel-${tab}`} aria-labelledby={`tab-${tab}`} className="mt-5 space-y-5">
+          {tab === "overview" && (
+            <>
+              {output && !output.isPlaceholder && <p className="text-[15px] text-slate-700">{summarise(output)}</p>}
+              {output?.isPlaceholder && <Notice tone="yellow">{PLACEHOLDER_NOTICE}</Notice>}
+              <MetricsCards output={output} />
+              {output && (
+                <Card title="Warnings and bottlenecks">
+                  <WarningsList warnings={output.warnings} />
+                </Card>
+              )}
+            </>
+          )}
+          {tab === "hospital" && <HospitalView output={output} viewTime={viewTime} setViewTime={setViewTime} />}
+          {tab === "charts" && <ResultsCharts output={output} viewTime={viewTime} />}
+          {tab === "compare" && <StrategyComparison />}
+        </div>
+      </div>
     </div>
   );
 }

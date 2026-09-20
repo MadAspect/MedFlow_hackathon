@@ -8,7 +8,7 @@ export default function HistoryPage() {
     <div className="space-y-6">
       <PageHeader
         title="History"
-        description="Past simulation runs. Open one to review its hospital view, charts and allocation decisions."
+        description="Every saved run. Open one to replay it."
       />
       <HistoryTable />
     </div>

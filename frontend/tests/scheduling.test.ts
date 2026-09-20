@@ -439,7 +439,7 @@ describe("strategy analysis, improvement formula and resource what-ifs", () => {
     const patients = contrastPatients();
     const a = analyse(patients, CONTRAST_RESOURCES, params);
     const row = (s: Strategy) => a.comparison.rows.find((r) => r.strategy === s)!;
-    for (const s of ["fcfs", "urgency", "dynamic"] as const) {
+    for (const s of ["fcfs", "urgency", "dynamic", "hazard"] as const) {
       const m = runSimulation(patients, CONTRAST_RESOURCES, { ...params, strategy: s }).metrics;
       expect(row(s).avgWait).toBe(m.average_wait);
       expect(row(s).criticalWait).toBe(m.critical_wait);
@@ -448,7 +448,7 @@ describe("strategy analysis, improvement formula and resource what-ifs", () => {
       expect(row(s).completion).toBe(m.actual_completion_time);
       expect(row(s).remaining).toBe(m.patients_remaining);
     }
-    expect(a.comparison.rows.map((r) => r.strategy)).toEqual(["fcfs", "urgency", "dynamic"]);
+    expect(a.comparison.rows.map((r) => r.strategy)).toEqual(["fcfs", "urgency", "dynamic", "hazard"]);
   });
 
   it("uses the specified improvement formulas", () => {
@@ -467,18 +467,18 @@ describe("strategy analysis, improvement formula and resource what-ifs", () => {
 
   it("computes the objective score from the specified weights", () => {
     expect(
-      objectiveScore({ total_waiting_time: 100, critical_wait_total: 10, patients_remaining: 2, resource_overload: 1, maximum_wait: 40 }),
-    ).toBe(100 + 40 + 20000 + 10000 + 20);
+      objectiveScore({ total_waiting_time: 100, critical_wait_total: 10, patients_remaining: 2, resource_overload: 1, maximum_wait: 40, completion_time: 60 }),
+    ).toBe(100 + 40 + 20000 + 10000 + 20 + 30);
     const out = run("fcfs", [P("A", 0, 5, 10), P("B", 0, 5, 10)], R({ doctor: 1 }));
-    // waits 0 and 10: total 10, critical total 10, max 10, nothing remaining or overloaded
-    expect(out.metrics.objective_score).toBe(10 + 4 * 10 + 0.5 * 10);
+    // waits 0 and 10: total 10, critical total 10, max 10, last patient finishes at 20, nothing remaining or overloaded
+    expect(out.metrics.objective_score).toBe(10 + 4 * 10 + 0.5 * 10 + 0.5 * 20);
   });
 
   it("flags identical orders with the required message", () => {
     // Patients never overlap, so every policy must choose the same order.
     const patients = [P("A", 0, 3, 10), P("B", 20, 3, 10)];
     const lab = compareStrategies(runAllStrategies(patients, R({ doctor: 1 }), params));
-    expect(lab.sameOrder).toHaveLength(3); // fcfs=urgency, fcfs=dynamic, urgency=dynamic
+    expect(lab.sameOrder).toHaveLength(6); // every pair among the four strategies
     expect(lab.sameOrderMessage).toBe(SAME_ORDER_MESSAGE);
     expect(SAME_ORDER_MESSAGE).toBe("These strategies produced the same order for this scenario.");
   });
@@ -563,8 +563,9 @@ describe("strategy verdict and advice", () => {
     const rows = waitByUrgency(runAllStrategies(contested(), oneDoctor, params));
     expect(rows.map((r) => r.urgency)).toEqual([5, 3, 1]);
     expect(rows[0]).toMatchObject({ urgency: 5, patients: 1, average: { fcfs: 108, urgency: 98, dynamic: 98 } });
-    expect(rows[1].average).toEqual({ fcfs: 0, urgency: 0, dynamic: 0 });
-    expect(rows[2].average).toEqual({ fcfs: 99, urgency: 109, dynamic: 109 }); // the price low-urgency patients pay
+    expect(rows[1].average).toEqual({ fcfs: 0, urgency: 0, dynamic: 0, hazard: 0 });
+    expect(rows[2].average).toMatchObject({ fcfs: 99, urgency: 109, dynamic: 109 }); // the price low-urgency patients pay
+    expect(Number.isFinite(rows[2].average.hazard)).toBe(true);
   });
 
   it("gives calculated advice, most urgent first", () => {

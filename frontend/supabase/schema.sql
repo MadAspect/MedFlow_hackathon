@@ -1,4 +1,4 @@
--- MedFlow database schema (Supabase Postgres).
+-- Waitless database schema (Supabase Postgres).
 -- Paste into the Supabase SQL editor and run once. Safe to re-run.
 --
 -- HACKATHON PROTOTYPE: there is no login, so the policies at the bottom let the
@@ -24,6 +24,16 @@ create table if not exists public.patients (
   priority_score     double precision not null default 0,
   created_at         timestamptz not null default now()
 );
+
+-- Booked in advance: arrival_time is then the appointment slot (minutes from simulation start).
+-- Run this once on an existing database; new databases get it from this file as well.
+alter table public.patients add column if not exists appointment boolean not null default false;
+
+-- Arrives by ambulance: the minute the hospital was warned (the dispatch). arrival_time is then
+-- when the ambulance reaches the door, so the estimated travel time is arrival_time - alert_time.
+-- NULL for everyone else. Run this once on an existing database; new databases get it from this file.
+alter table public.patients add column if not exists alert_time integer
+  check (alert_time is null or alert_time >= 0);
 
 -- Patient IDs are unique, ignoring case ("p001" and "P001" clash).
 create unique index if not exists patients_patient_id_lower_key
@@ -133,3 +143,6 @@ begin
     );
   end loop;
 end $$;
+
+-- Make the API pick up new columns immediately instead of waiting for its schema cache to refresh.
+notify pgrst, 'reload schema';

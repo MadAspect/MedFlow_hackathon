@@ -1,13 +1,5 @@
 import type { ResourceRequest, SimPatient } from "./types";
 
-/**
- * Deterministic emergency-surge arrivals.
- *
- * The surge is synthetic and identical for every strategy, so strategy
- * comparisons stay fair. One patient arrives per minute starting at
- * `surgeStart`, cycling through a fixed template of urgencies, treatment
- * times and resource needs (most need an ICU bed, so a surge stresses ICU capacity).
- */
 const URGENCIES = [5, 4, 5, 3, 4, 5, 4, 3, 5, 4];
 const TREATMENT_TIMES = [25, 25, 35, 20, 25, 40, 25, 20, 30, 25];
 const CONDITIONS = [

@@ -9,7 +9,7 @@ export default function PatientsPage() {
     <div className="space-y-6">
       <PageHeader
         title="Patients"
-        description="Add synthetic patients or load example data. Everything here is stored in the database and survives a page refresh."
+        description="Walk-in patients. Add your own or load examples."
       />
       <PatientForm />
       <PatientTable />

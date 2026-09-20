@@ -19,20 +19,15 @@ export interface ComparisonRow {
   avgWait: number;
   criticalWait: number;
   maxWait: number;
-  /** Patients whose wait exceeded the safety threshold. */
   breaches: number;
   remaining: number;
-  /** Minute the last patient finished treatment. */
   completion: number;
 }
 
 export interface Comparison {
   rows: ComparisonRow[];
-  /** Strategies sharing the best value per category (empty when all are equal). */
   best: Record<BestKey, Strategy[]>;
-  /** Pairs of strategies that started patients in exactly the same order. */
   sameOrder: [Strategy, Strategy][];
-  /** SAME_ORDER_MESSAGE when any pair matches, otherwise null. */
   sameOrderMessage: string | null;
 }
 

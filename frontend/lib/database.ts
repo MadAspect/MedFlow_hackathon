@@ -14,10 +14,6 @@ import {
   type TimelinePoint,
 } from "./simulation/types";
 
-/* -------------------------------------------------------------------------- */
-/* Row types (mirror supabase/schema.sql)                                     */
-/* -------------------------------------------------------------------------- */
-
 export type PatientStatus =
   | "waiting"
   | "in_treatment"
@@ -32,6 +28,8 @@ export interface NewPatient {
   urgency: number;
   treatment_time: number;
   required_resources: ResourceRequest;
+  appointment?: boolean;
+  alert_time?: number | null;
 }
 
 export interface PatientRow extends NewPatient {
@@ -60,13 +58,16 @@ export interface RunRow {
   failed_resource: string | null;
   status: "running" | "completed" | "failed";
   created_at: string;
-  /** Full parameters and the resource snapshot, so a run can be re-displayed. */
-  parameters: { params: SimParams; resources: ResourceSet };
+  parameters: {
+    params: SimParams;
+    resources: ResourceSet;
+    appointments?: string[];
+    ambulances?: Record<string, number>;
+  };
   engine: string;
   is_placeholder: boolean;
 }
 
-/** Utilizations are stored as fractions in the range 0..1. */
 export interface ResultRow {
   id: string;
   simulation_run_id: string;
@@ -107,7 +108,6 @@ export interface AllocationRow {
 export interface StoredRun {
   run: RunRow;
   result: ResultRow | null;
-  /** Empty in list results; loaded by getRun(). */
   allocations: AllocationRow[];
 }
 
@@ -128,34 +128,23 @@ export class DuplicatePatientError extends DatabaseError {
   }
 }
 
-/* -------------------------------------------------------------------------- */
-/* Database interface                                                         */
-/* -------------------------------------------------------------------------- */
-
 export interface Database {
   readonly mode: "supabase" | "local";
-  /** Resolves if the database is reachable and the schema exists. */
   ping(): Promise<void>;
   listPatients(): Promise<PatientRow[]>;
   insertPatients(patients: NewPatient[]): Promise<PatientRow[]>;
   deletePatient(patientId: string): Promise<void>;
   clearPatients(): Promise<void>;
   setPatientStatus(patientId: string, status: PatientStatus): Promise<void>;
-  /** Replace stored patients (matched by id) with the given rows. */
   updatePatients(rows: PatientRow[]): Promise<void>;
   getLatestResources(): Promise<ResourceConfigRow | null>;
   saveResources(resources: ResourceSet): Promise<ResourceConfigRow>;
   saveSimulation(output: SimulationOutput): Promise<StoredRun>;
-  /** Newest first, without allocations. */
   listRuns(limit?: number): Promise<StoredRun[]>;
   getRun(id: string): Promise<StoredRun | null>;
 }
 
 export const RUN_HISTORY_LIMIT = 50;
-
-/* -------------------------------------------------------------------------- */
-/* Shared helpers                                                             */
-/* -------------------------------------------------------------------------- */
 
 export function resourcesFromRow(row: ResourceConfigRow): ResourceSet {
   return {
@@ -177,7 +166,6 @@ export function resourceRowFields(resources: ResourceSet) {
   };
 }
 
-/** Score at arrival time (waiting time 0) — used before any simulation has run. */
 export function basePriorityScore(p: NewPatient): number {
   return scoreBreakdown(
     {
@@ -193,7 +181,6 @@ export function basePriorityScore(p: NewPatient): number {
   ).total;
 }
 
-/** Split a simulation output into the run / result / allocation records (without ids). */
 export function runRecordsFromOutput(output: SimulationOutput) {
   const m = output.metrics;
   const run = {
@@ -202,7 +189,12 @@ export function runRecordsFromOutput(output: SimulationOutput) {
     emergency_surge: output.params.emergencySurge,
     resource_failure: output.params.resourceFailure,
     failed_resource: output.params.resourceFailure ? output.params.failedResource : null,
-    parameters: { params: output.params, resources: output.resources },
+    parameters: {
+      params: output.params,
+      resources: output.resources,
+      appointments: output.patients.filter((p) => p.appointment).map((p) => p.id),
+      ambulances: Object.fromEntries(output.patients.filter((p) => p.ambulance && p.alert_time != null).map((p) => [p.id, p.alert_time as number])),
+    },
     engine: output.engine,
     is_placeholder: output.isPlaceholder,
   };
@@ -240,10 +232,6 @@ export function runRecordsFromOutput(output: SimulationOutput) {
 }
 
 const newId = () => crypto.randomUUID();
-
-/* -------------------------------------------------------------------------- */
-/* Supabase implementation                                                    */
-/* -------------------------------------------------------------------------- */
 
 function check(error: { message: string; code?: string } | null, context: string): void {
   if (!error) return;
@@ -426,11 +414,6 @@ export function createSupabaseDatabase(client: SupabaseClient): Database {
   };
 }
 
-/* -------------------------------------------------------------------------- */
-/* Local (browser storage) implementation                                     */
-/* -------------------------------------------------------------------------- */
-
-/** Minimal storage interface so tests can inject an in-memory store. */
 export interface KeyValueStore {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
@@ -447,29 +430,24 @@ export function createMemoryStore(): KeyValueStore {
 function browserStore(): KeyValueStore {
   try {
     const ls = window.localStorage;
-    ls.setItem("medflow.probe", "1");
-    ls.removeItem("medflow.probe");
+    ls.setItem("waitless.probe", "1");
+    ls.removeItem("waitless.probe");
     return ls;
   } catch {
     return createMemoryStore(); // storage blocked: works for this tab only
   }
 }
 
-/** Local history is capped so the browser's ~5 MB quota is never exceeded. */
 const LOCAL_RUN_LIMIT = 25;
 
 const KEYS = {
-  patients: "medflow.patients",
-  resources: "medflow.resources",
-  runs: "medflow.runs",
-  results: "medflow.results",
-  allocations: "medflow.allocations",
+  patients: "waitless.patients",
+  resources: "waitless.resources",
+  runs: "waitless.runs",
+  results: "waitless.results",
+  allocations: "waitless.allocations",
 } as const;
 
-/**
- * Fallback used when Supabase credentials are missing or the database is
- * unreachable. Data persists in this browser only.
- */
 export function createLocalDatabase(store: KeyValueStore = browserStore()): Database {
   const read = <T>(key: string): T[] => {
     try {
@@ -624,22 +602,12 @@ export function createLocalDatabase(store: KeyValueStore = browserStore()): Data
   };
 }
 
-/* -------------------------------------------------------------------------- */
-/* Connection                                                                 */
-/* -------------------------------------------------------------------------- */
-
 export interface Connection {
   db: Database;
-  /** True when talking to Supabase Postgres. */
   connected: boolean;
-  /** Human-readable explanation shown in the status bar. */
   message: string;
 }
 
-/**
- * Pick the database: Supabase when credentials exist and the schema answers,
- * otherwise the browser-storage fallback with an explanation.
- */
 export async function connectDatabase(): Promise<Connection> {
   const config = getSupabaseConfigState();
   const client = getSupabase();

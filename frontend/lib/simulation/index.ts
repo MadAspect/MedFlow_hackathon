@@ -5,10 +5,14 @@ import type { ResourceSet, SimParams, SimPatient, SimulationOutput } from "./typ
 export * from "./types";
 export * from "./resources";
 export * from "./policies";
+export * from "./hazard";
 export * from "./metrics";
 export * from "./compare";
 export * from "./efficiency";
 export * from "./advice";
+export * from "./ambulance";
+export * from "./appointments";
+export * from "./live";
 export {
   ENGINE_NAME,
   SimulationInputError,
@@ -22,11 +26,6 @@ export { PLACEHOLDER_ENGINE_NAME, runPlaceholderSimulation } from "./placeholder
 
 export type EngineMode = "real" | "placeholder";
 
-/**
- * "real" runs the calculated scheduling engine. Set
- * NEXT_PUBLIC_SIMULATION_ENGINE=placeholder to force the clearly-labelled
- * placeholder engine (for example while wiring in a different backend).
- */
 export function activeEngineMode(): EngineMode {
   return process.env.NEXT_PUBLIC_SIMULATION_ENGINE === "placeholder" ? "placeholder" : "real";
 }

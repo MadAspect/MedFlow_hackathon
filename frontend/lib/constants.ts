@@ -1,4 +1,3 @@
-/** Synthetic condition labels. Patients pick from this list, so no free text is stored. */
 export const CONDITIONS = [
   "Cardiac event",
   "Stroke",

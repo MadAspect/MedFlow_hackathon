@@ -6,7 +6,6 @@ import type { PatientOutcome, SimulationOutput } from "@/lib/simulation";
 
 const LABEL_W = 84; // px, keep in sync with the `w-[84px]` classes below
 
-/** A round tick spacing that gives roughly eight ticks across the run. */
 function niceStep(horizon: number): number {
   const target = horizon / 8;
   for (const s of [1, 2, 5, 10, 15, 20, 30, 60, 120, 240]) if (s >= target) return s;
@@ -16,12 +15,6 @@ function niceStep(horizon: number): number {
 const byArrival = (a: PatientOutcome, b: PatientOutcome) =>
   a.arrival_time - b.arrival_time || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
-/**
- * Every patient as one row: how long they waited (grey while inside the safety
- * limit, red once past it) followed by their treatment (blue). A playhead follows
- * the hospital-view clock, and clicking the chart moves it. This is the quickest
- * way to see WHO waited and when the bottlenecks bit.
- */
 export function PatientTimeline({
   output,
   viewTime,
@@ -54,14 +47,14 @@ export function PatientTimeline({
   };
 
   const markers = [
-    params.emergencySurge && params.surgeStart <= horizon ? { at: params.surgeStart, label: "Surge", color: "#d97706" } : null,
-    params.resourceFailure && params.failureStart <= horizon ? { at: params.failureStart, label: "Failure", color: "#dc2626" } : null,
+    params.emergencySurge && params.surgeStart <= horizon ? { at: params.surgeStart, label: "Surge", color: "var(--chart-warn-text)" } : null,
+    params.resourceFailure && params.failureStart <= horizon ? { at: params.failureStart, label: "Failure", color: "var(--chart-crit-text)" } : null,
   ].filter((m): m is { at: number; label: string; color: string } => m !== null);
 
   return (
     <Card
       title="Patient timeline"
-      description="One row per patient: waiting, then treatment. Click anywhere on the chart to jump to that minute."
+      description="One row per patient. Click the chart to jump to a minute."
     >
       <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-700" aria-hidden>
         <span className="flex items-center gap-1.5">
@@ -73,9 +66,19 @@ export function PatientTimeline({
         <span className="flex items-center gap-1.5">
           <span className="h-2.5 w-5 rounded-sm bg-gradient-to-r from-blue-600 to-sky-500" /> In treatment
         </span>
+        {output.patients.some((p) => p.ambulance) && (
+          <span className="flex items-center gap-1.5">
+            <span className="h-0 w-5 border-t-2 border-dashed border-red-500" /> Ambulance on its way
+          </span>
+        )}
+        {output.patients.some((p) => p.appointment) && (
+          <span className="flex items-center gap-1.5">
+            <span className="h-2.5 w-2.5 rotate-45 border-2 border-violet-600 bg-surface" /> Booked slot
+          </span>
+        )}
       </div>
 
-      <div className="relative max-h-[26rem] overflow-y-auto rounded-lg border border-slate-200 bg-white">
+      <div className="relative max-h-[26rem] overflow-y-auto rounded-lg border border-slate-200 bg-surface">
         {/* time axis */}
         <div className="sticky top-0 z-10 flex border-b border-slate-200 bg-slate-50/95 text-[10px] text-slate-500 backdrop-blur">
           <div className="w-[84px] shrink-0 px-2 py-1 font-semibold uppercase">Patient</div>
@@ -112,7 +115,8 @@ export function PatientTimeline({
                   <span aria-hidden className={cx("h-1.5 w-1.5 rounded-full", critical ? "bg-red-500" : p.urgency === 3 ? "bg-amber-500" : "bg-slate-300")} />
                   {p.id}
                   <span className="sr-only">
-                    , urgency {p.urgency}, waited {p.wait_time} minutes
+                    {p.appointment ? ", booked appointment" : ""}
+                    {p.ambulance ? ", arrived by ambulance" : ""}, urgency {p.urgency}, waited {p.wait_time} minutes
                   </span>
                 </button>
                 <div className="relative h-[18px] flex-1 cursor-pointer" onClick={scrub} aria-hidden>
@@ -123,6 +127,20 @@ export function PatientTimeline({
                         <div className="absolute top-1/2 h-2 -translate-y-1/2 bg-red-400" style={{ left: pct(safeEnd), width: `calc(${pct(waitEnd)} - ${pct(safeEnd)})` }} />
                       )}
                     </>
+                  )}
+                  {p.ambulance && p.alert_time != null && p.alert_time < p.arrival_time && (
+                    <div
+                      className="absolute top-1/2 -translate-y-1/2 border-t-2 border-dashed border-red-500"
+                      style={{ left: pct(p.alert_time), width: `calc(${pct(p.arrival_time)} - ${pct(p.alert_time)})` }}
+                      title={`${p.id}: ambulance warned at minute ${p.alert_time}, arrives at minute ${p.arrival_time}`}
+                    />
+                  )}
+                  {p.appointment && (
+                    <span
+                      className="absolute top-1/2 z-[1] h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rotate-45 border-2 border-violet-600 bg-surface"
+                      style={{ left: pct(p.arrival_time) }}
+                      title={`${p.id}: booked for minute ${p.arrival_time}`}
+                    />
                   )}
                   {started && (
                     <div
@@ -141,14 +159,14 @@ export function PatientTimeline({
             {markers.map((m) => (
               <div key={m.label} className="absolute inset-y-0 border-l border-dashed" style={{ left: pct(m.at), borderColor: m.color }} />
             ))}
-            <div className="playhead absolute inset-y-0 w-0.5 -translate-x-1/2 bg-blue-700" style={{ left: pct(t) }}>
-              <span className="absolute -top-0.5 left-1/2 h-2 w-2 -translate-x-1/2 rounded-full bg-blue-700 ring-2 ring-white" />
+            <div className="playhead absolute inset-y-0 w-0.5 -translate-x-1/2 bg-blue-600" style={{ left: pct(t) }}>
+              <span className="absolute -top-0.5 left-1/2 h-2 w-2 -translate-x-1/2 rounded-full bg-blue-600 ring-2 ring-surface" />
             </div>
           </div>
         </div>
       </div>
       <p className="mt-2 text-xs text-slate-500">
-        Showing minute {t} of {horizon}. Patients who never started (only possible in an incomplete run) stay red to the end.
+        Minute {t} of {horizon}.
       </p>
     </Card>
   );

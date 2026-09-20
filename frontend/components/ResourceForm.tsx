@@ -34,7 +34,7 @@ export function ResourceForm() {
   return (
     <Card
       title="Resource configuration"
-      description="Capacity available to the simulation. Values must be whole numbers, zero or more."
+      description="Whole numbers, zero or more."
     >
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
         {RESOURCE_KEYS.map((key) => (
@@ -45,7 +45,7 @@ export function ResourceForm() {
       </div>
       <div className="mt-4 flex flex-wrap items-center gap-2">
         <Button onClick={() => void save()}>
-          <Save size={16} aria-hidden /> Save Configuration
+          <Save size={16} aria-hidden /> Save
         </Button>
         <Button
           variant="secondary"
@@ -57,7 +57,7 @@ export function ResourceForm() {
             }
           }}
         >
-          <Download size={16} aria-hidden /> Load Latest Configuration
+          <Download size={16} aria-hidden /> Load saved
         </Button>
         <Button variant="ghost" onClick={() => setDraft(DEFAULT_RESOURCES)}>
           <RotateCcw size={16} aria-hidden /> Use defaults
@@ -66,7 +66,7 @@ export function ResourceForm() {
       </div>
       {!resourcesSaved && (
         <Notice tone="yellow" className="mt-3">
-          No configuration has been saved yet. Save one before running a simulation.
+          Save a configuration before running a simulation.
         </Notice>
       )}
     </Card>

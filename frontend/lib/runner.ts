@@ -26,7 +26,6 @@ export class RunPreconditionError extends Error {
   }
 }
 
-/** Cancelled patients are left out of every simulation. */
 export function toSimPatients(rows: PatientRow[]): SimPatient[] {
   return rows
     .filter((p) => p.status !== "cancelled")
@@ -37,6 +36,8 @@ export function toSimPatients(rows: PatientRow[]): SimPatient[] {
       urgency: p.urgency,
       treatment_time: p.treatment_time,
       required_resources: p.required_resources,
+      ...(p.appointment ? { appointment: true } : {}),
+      ...(p.alert_time != null ? { ambulance: { alert_time: p.alert_time } } : {}),
     }));
 }
 
@@ -47,15 +48,9 @@ export function patientStatusFromOutcome(status: OutcomeStatus): PatientStatus {
 export interface RunResult {
   output: SimulationOutput;
   stored: StoredRun;
-  /** Patient rows after their statuses/scores were updated from this run. */
   patients: PatientRow[];
 }
 
-/**
- * The full "Run Simulation" pipeline:
- * load patients + latest resources → validate → run the engine →
- * save run/results/allocations → update patient statuses.
- */
 export async function executeRun(
   db: Database,
   params: Partial<SimParams>,
@@ -91,7 +86,6 @@ export async function executeRun(
   return { output, stored, patients: updated };
 }
 
-/** Put every non-cancelled patient back to "waiting" (Reset Current Run). */
 export async function resetPatientStatuses(db: Database): Promise<PatientRow[]> {
   const rows = await db.listPatients();
   const reset = rows.map((r) => (r.status === "cancelled" ? r : { ...r, status: "waiting" as PatientStatus }));
@@ -99,7 +93,7 @@ export async function resetPatientStatuses(db: Database): Promise<PatientRow[]> 
   return reset;
 }
 
-function outcomeFromAllocation(a: AllocationRow): PatientOutcome {
+function outcomeFromAllocation(a: AllocationRow, appointments: Set<string>, ambulances: Record<string, number>): PatientOutcome {
   return {
     id: a.patient_id,
     condition: a.condition,
@@ -108,6 +102,9 @@ function outcomeFromAllocation(a: AllocationRow): PatientOutcome {
     treatment_time: a.treatment_time,
     required_resources: a.allocated_resources,
     emergency: a.emergency,
+    appointment: appointments.has(a.patient_id),
+    ambulance: a.patient_id in ambulances,
+    alert_time: ambulances[a.patient_id] ?? null,
     status: a.status,
     start_time: a.start_time,
     end_time: a.completion_time,
@@ -117,14 +114,12 @@ function outcomeFromAllocation(a: AllocationRow): PatientOutcome {
   };
 }
 
-/**
- * Rebuild the displayable output of a saved run (used by History and after a refresh).
- * Runs saved by earlier versions lack the completion fields, so they are derived
- * here from what was stored (those runs stopped at the configured duration).
- */
 export function outputFromStoredRun(stored: StoredRun): SimulationOutput | null {
   if (!stored.result) return null;
-  const patients = stored.allocations.map(outcomeFromAllocation);
+  // Which patients were booked is kept in the run's parameters (no extra table column needed).
+  const appointments = new Set(stored.run.parameters.appointments ?? []);
+  const ambulances = stored.run.parameters.ambulances ?? {};
+  const patients = stored.allocations.map((a) => outcomeFromAllocation(a, appointments, ambulances));
   const params = stored.run.parameters.params;
   const base = stored.result.metrics;
   const saved: Partial<Metrics> = base;
@@ -148,6 +143,8 @@ export function outputFromStoredRun(stored: StoredRun): SimulationOutput | null 
         patients_remaining: base.patients_remaining,
         resource_overload: 0,
         maximum_wait: base.maximum_wait,
+        // Old runs did not store a completion time; the last stored treatment end is the real one.
+        completion_time: patients.reduce((latest, p) => Math.max(latest, p.end_time ?? 0), 0),
       }),
   };
   const flagged = stored.result.warnings.find((w) => w.code === "simulation_incomplete");

@@ -8,7 +8,6 @@ export const RESOURCE_LABELS: Record<ResourceKey, string> = {
   operating_room: "Operating rooms",
 };
 
-/** Singular form, used in sentences such as "1 × ICU bed offline". */
 export const RESOURCE_SINGULAR: Record<ResourceKey, string> = {
   doctor: "doctor",
   nurse: "nurse",
@@ -17,7 +16,6 @@ export const RESOURCE_SINGULAR: Record<ResourceKey, string> = {
   operating_room: "operating room",
 };
 
-/** Sensible hospital defaults from the product brief. */
 export const DEFAULT_RESOURCES: ResourceSet = {
   doctor: 5,
   nurse: 10,

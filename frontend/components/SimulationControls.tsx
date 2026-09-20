@@ -1,19 +1,21 @@
 "use client";
 
 import { FlaskConical, Play, RotateCcw } from "lucide-react";
-import { useState } from "react";
-import { Badge, Button, Card, Field, NumberInput, Notice, cx, inputClass } from "./ui";
+import { useState, type ReactNode } from "react";
+import { Badge, Button, Card, Field, InfoTip, NumberInput, Notice, Segmented, Switch, inputClass } from "./ui";
 import { CONTRAST_MESSAGE } from "@/lib/demo";
 import { useStore } from "@/lib/store";
 import {
+  AMBULANCE_GRACE,
+  APPOINTMENT_GRACE,
   FCFS_NOTE,
   PLACEHOLDER_NOTICE,
   RESOURCE_KEYS,
   RESOURCE_LABELS,
   STRATEGIES,
   STRATEGY_DESCRIPTIONS,
-  STRATEGY_LABELS,
   type ResourceKey,
+  type Strategy,
   type Weights,
 } from "@/lib/simulation";
 import { validateSimulationControls, type FieldErrors } from "@/lib/validation";
@@ -21,13 +23,34 @@ import { validateSimulationControls, type FieldErrors } from "@/lib/validation";
 const WEIGHT_FIELDS: { key: keyof Weights; label: string; hint: string }[] = [
   { key: "alpha", label: "α urgency", hint: "per urgency level" },
   { key: "beta", label: "β waiting", hint: "per minute waited" },
-  { key: "gamma", label: "γ risk", hint: "× deterioration risk (0–1)" },
+  { key: "gamma", label: "γ risk", hint: "× risk (0–1)" },
   { key: "delta", label: "δ emergency", hint: "for surge arrivals" },
 ];
 
-export function SimulationControls() {
-  const { params, setParams, runSimulation, runContrast, resetRun, running, engineMode, patients, resourcesSaved } = useStore();
+const STRATEGY_SHORT: Record<Strategy, { label: string; summary: string }> = {
+  fcfs: { label: "First-come", summary: "Arrival order. The baseline." },
+  urgency: { label: "Urgency", summary: "Most urgent patient first." },
+  dynamic: { label: "Dynamic", summary: "Urgency, waiting time and risk." },
+  hazard: { label: "Harm-density", summary: "Most harm relieved per scarce resource." },
+};
+
+function Group({ label, info, children }: { label: string; info?: ReactNode; children: ReactNode }) {
+  return (
+    <div>
+      <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold tracking-wide text-slate-500 uppercase">
+        {label}
+        {info && <InfoTip align="left">{info}</InfoTip>}
+      </p>
+      {children}
+    </div>
+  );
+}
+
+export function SimulationControls({ onRan }: { onRan?: () => void } = {}) {
+  const { params, setParams, runSimulation, runContrast, resetRun, running, engineMode, patients, resourcesSaved, liveReplay, setLiveReplay } = useStore();
   const [errors, setErrors] = useState<FieldErrors>({});
+  const bookedCount = patients.filter((p) => p.appointment && p.status !== "cancelled").length;
+  const ambulanceCount = patients.filter((p) => p.alert_time != null && p.status !== "cancelled").length;
 
   async function run() {
     const check = validateSimulationControls({
@@ -41,152 +64,175 @@ export function SimulationControls() {
       return;
     }
     setErrors({});
-    await runSimulation();
+    if (await runSimulation()) onRan?.();
   }
 
+  const notReady = patients.length === 0 || !resourcesSaved;
+
   return (
-    <Card title="Simulation controls" description="The same patients and resources are used for every strategy.">
+    <Card title="Run a simulation" actions={<Switch checked={liveReplay} onChange={setLiveReplay} label="Live replay" infoAlign="right" info="After a run, play it back minute by minute. The charts and cards fill in as the clock moves. Turn off to jump straight to the end." />}>
       {engineMode === "placeholder" && (
         <Notice tone="yellow" className="mb-4">
           {PLACEHOLDER_NOTICE}
         </Notice>
       )}
 
-      <fieldset>
-        <legend className="mb-1 text-sm font-medium text-slate-800">Scheduling strategy</legend>
-        <p className="mb-2 text-sm text-slate-700">{FCFS_NOTE}</p>
-        <div className="grid gap-2 md:grid-cols-3">
-          {STRATEGIES.map((s) => (
-            <label
-              key={s}
-              className={cx(
-                "flex cursor-pointer gap-2 rounded-md border p-3 text-sm",
-                "transition-all",
-                params.strategy === s
-                  ? "border-blue-600 bg-gradient-to-br from-blue-50 to-sky-50 shadow-md shadow-blue-600/10 ring-1 ring-blue-600"
-                  : "border-slate-300 bg-white hover:-translate-y-0.5 hover:border-blue-300 hover:shadow-sm",
-              )}
-            >
-              <input type="radio" name="strategy" checked={params.strategy === s} onChange={() => setParams({ strategy: s })} className="mt-1 accent-blue-700" />
-              <span>
-                <span className="flex flex-wrap items-center gap-1.5 font-semibold text-slate-900">
-                  {STRATEGY_LABELS[s]}
-                  {s === "fcfs" && <Badge tone="blue">Most common · baseline</Badge>}
-                </span>
-                <span className="block text-xs text-slate-600">{STRATEGY_DESCRIPTIONS[s]}</span>
+      <div className="grid gap-x-10 gap-y-6 md:grid-cols-2">
+        <Group
+          label="Strategy"
+          info={
+            <>
+              {FCFS_NOTE}
+              <span className="mt-2 block">
+                <strong>Urgency:</strong> {STRATEGY_DESCRIPTIONS.urgency}
               </span>
-            </label>
-          ))}
-        </div>
-      </fieldset>
+              <span className="mt-2 block">
+                <strong>Dynamic:</strong> {STRATEGY_DESCRIPTIONS.dynamic}
+              </span>
+            </>
+          }
+        >
+          <Segmented
+            label="Scheduling strategy"
+            value={params.strategy}
+            onChange={(s) => setParams({ strategy: s })}
+            options={STRATEGIES.map((s) => ({ value: s, label: STRATEGY_SHORT[s].label }))}
+          />
+          <p className="mt-2 text-[13px] text-slate-500">{STRATEGY_SHORT[params.strategy].summary}</p>
+        </Group>
 
-      <label className="mt-3 flex cursor-pointer items-start gap-2 rounded-md border border-slate-200 bg-white/70 p-3 text-sm">
-        <input
-          type="checkbox"
-          checked={params.reservation === true}
-          onChange={(e) => setParams({ reservation: e.target.checked })}
-          className="mt-0.5 h-4 w-4 accent-blue-700"
-        />
-        <span>
-          <span className="flex flex-wrap items-center gap-1.5 font-medium text-slate-900">
-            Protect blocked critical patients <Badge tone="blue">Works with any strategy</Badge>
-          </span>
-          <span className="block text-xs text-slate-600">
-            When the top-ranked patient is critical, an emergency or past the safety limit and is still waiting for resources, the earliest start is reserved for
-            them and nobody may jump ahead if that would delay it. Stops a patient who needs several resources (say two doctors) from being starved by a stream of
-            small cases. Trade-off: some capacity can sit idle, so on generic loads critical waits drop by roughly 8% while average waits rise a little.
-          </span>
-        </span>
-      </label>
+        <Group label="Duration">
+          <Field label="Planned minutes" htmlFor="duration" error={errors.duration}>
+            <NumberInput id="duration" value={params.duration} min={1} step={5} invalid={!!errors.duration} onValue={(n) => setParams({ duration: n })} className="w-32" />
+          </Field>
+        </Group>
 
-      <div className="mt-4 grid gap-4 md:grid-cols-3">
-        <Field label="Planned duration (min)" htmlFor="duration" error={errors.duration} hint="observation period — the run continues past it until every patient is treated">
-          <NumberInput id="duration" value={params.duration} min={1} step={5} invalid={!!errors.duration} onValue={(n) => setParams({ duration: n })} />
-        </Field>
-
-        <div className="rounded-md border border-slate-200 p-3">
-          <label className="flex items-center gap-2 text-sm font-medium text-slate-900">
-            <input type="checkbox" checked={params.emergencySurge} onChange={(e) => setParams({ emergencySurge: e.target.checked })} className="h-4 w-4 accent-blue-700" />
-            Emergency surge
-          </label>
-          <p className="mt-1 text-xs text-slate-600">Adds {params.surgeCount} synthetic emergency arrivals, one per minute.</p>
-          {params.emergencySurge && (
-            <div className="mt-2">
-              <Field label="Surge start (min)" htmlFor="surgeStart" error={errors.surgeStart}>
-                <NumberInput id="surgeStart" value={params.surgeStart} min={0} invalid={!!errors.surgeStart} onValue={(n) => setParams({ surgeStart: n })} />
-              </Field>
+        <Group label="Scenario">
+          <div className="space-y-3">
+            <div>
+              <Switch
+                checked={params.emergencySurge}
+                onChange={(on) => setParams({ emergencySurge: on })}
+                label="Emergency surge"
+                info={`Adds ${params.surgeCount} emergency arrivals, one per minute, from the start minute.`}
+              />
+              {params.emergencySurge && (
+                <div className="mt-2 ml-11 max-w-40">
+                  <Field label="Starts at minute" htmlFor="surgeStart" error={errors.surgeStart}>
+                    <NumberInput id="surgeStart" value={params.surgeStart} min={0} invalid={!!errors.surgeStart} onValue={(n) => setParams({ surgeStart: n })} />
+                  </Field>
+                </div>
+              )}
             </div>
-          )}
-        </div>
-
-        <div className="rounded-md border border-slate-200 p-3">
-          <label className="flex items-center gap-2 text-sm font-medium text-slate-900">
-            <input type="checkbox" checked={params.resourceFailure} onChange={(e) => setParams({ resourceFailure: e.target.checked })} className="h-4 w-4 accent-blue-700" />
-            Resource failure
-          </label>
-          <p className="mt-1 text-xs text-slate-600">Takes units offline (an occupied unit goes offline once freed).</p>
-          {params.resourceFailure && (
-            <div className="mt-2 grid grid-cols-3 gap-2">
-              <Field label="Resource" htmlFor="failedResource">
-                <select id="failedResource" className={inputClass} value={params.failedResource} onChange={(e) => setParams({ failedResource: e.target.value as ResourceKey })}>
-                  {RESOURCE_KEYS.map((k) => (
-                    <option key={k} value={k}>
-                      {RESOURCE_LABELS[k]}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="Start (min)" htmlFor="failureStart" error={errors.failureStart}>
-                <NumberInput id="failureStart" value={params.failureStart} min={0} invalid={!!errors.failureStart} onValue={(n) => setParams({ failureStart: n })} />
-              </Field>
-              <Field label="Units" htmlFor="failureUnits" error={errors.failureUnits}>
-                <NumberInput id="failureUnits" value={params.failureUnits} min={1} invalid={!!errors.failureUnits} onValue={(n) => setParams({ failureUnits: n })} />
-              </Field>
+            <div>
+              <Switch
+                checked={params.resourceFailure}
+                onChange={(on) => setParams({ resourceFailure: on })}
+                label="Resource failure / staff shortage"
+                info="Takes units of one resource offline. Choose Doctors or Nurses to simulate a staff shortage, or a bed, ICU bed or operating room for equipment failure. A unit that is in use goes offline once it is freed."
+              />
+              {params.resourceFailure && (
+                <div className="mt-2 ml-11 grid max-w-md grid-cols-3 gap-2">
+                  <Field label="Resource" htmlFor="failedResource">
+                    <select id="failedResource" className={inputClass} value={params.failedResource} onChange={(e) => setParams({ failedResource: e.target.value as ResourceKey })}>
+                      {RESOURCE_KEYS.map((k) => (
+                        <option key={k} value={k}>
+                          {RESOURCE_LABELS[k]}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label="At minute" htmlFor="failureStart" error={errors.failureStart}>
+                    <NumberInput id="failureStart" value={params.failureStart} min={0} invalid={!!errors.failureStart} onValue={(n) => setParams({ failureStart: n })} />
+                  </Field>
+                  <Field label="Units" htmlFor="failureUnits" error={errors.failureUnits}>
+                    <NumberInput id="failureUnits" value={params.failureUnits} min={1} invalid={!!errors.failureUnits} onValue={(n) => setParams({ failureUnits: n })} />
+                  </Field>
+                </div>
+              )}
             </div>
-          )}
-        </div>
+          </div>
+        </Group>
+
+        <Group label="Safeguards">
+          <div className="space-y-3">
+            <Switch
+              checked={params.protectAppointments !== false}
+              onChange={(on) => setParams({ protectAppointments: on })}
+              ariaLabel="Protect appointments"
+              label={
+                <span className="inline-flex items-center gap-2">
+                  Protect appointments <Badge tone={bookedCount > 0 ? "blue" : "grey"}>{bookedCount} booked</Badge>
+                </span>
+              }
+              info={`Keeps resources free for booked slots so an appointment starts within ${APPOINTMENT_GRACE} minutes of its time. Walk-ins may be held back briefly. Top-urgency patients (5) are never held.${bookedCount === 0 ? " Book some on the Appointments page." : ""}`}
+            />
+            <Switch
+              checked={params.preAlert !== false}
+              onChange={(on) => setParams({ preAlert: on })}
+              ariaLabel="Act on ambulance pre-alerts"
+              label={
+                <span className="inline-flex items-center gap-2">
+                  Act on ambulance pre-alerts <Badge tone={ambulanceCount > 0 ? "red" : "grey"}>{ambulanceCount} inbound</Badge>
+                </span>
+              }
+              info={`From the moment the hospital is warned, resources an ambulance patient will need are kept free so they start within ${AMBULANCE_GRACE} minutes of arriving. Walk-ins may be held back briefly. Top-urgency patients (5) are never held.${ambulanceCount === 0 ? " Log some on the Ambulances page." : ""}`}
+            />
+            <Switch
+              checked={params.reservation === true}
+              onChange={(on) => setParams({ reservation: on })}
+              label="Protect blocked critical patients"
+              info="When the top-ranked patient is critical (or past the safety limit) and waiting for resources, the earliest start is reserved for them so smaller cases cannot starve them. Trade-off: some capacity can sit idle."
+            />
+          </div>
+        </Group>
       </div>
 
-      <details className="mt-4 rounded-md border border-slate-200 p-3">
-        <summary className="cursor-pointer text-sm font-medium text-slate-800">Advanced: priority weights and thresholds</summary>
-        <p className="mt-2 text-xs text-slate-600">
-          S = α·urgency + β·waiting + γ·risk + δ·emergency. Weights only affect the Dynamic Priority strategy (and the score shown for the others).
-        </p>
-        <div className="mt-3 grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
-          {WEIGHT_FIELDS.map((w) => (
-            <Field key={w.key} label={w.label} htmlFor={`w-${w.key}`} hint={w.hint}>
-              <NumberInput id={`w-${w.key}`} value={params.weights[w.key]} step={0.05} onValue={(n) => setParams({ weights: { ...params.weights, [w.key]: Number.isFinite(n) ? n : 0 } })} />
+      <details className="group mt-6 rounded-lg border border-slate-200 open:bg-slate-50/50">
+        <summary className="flex cursor-pointer list-none items-center justify-between px-3.5 py-2.5 text-sm font-medium text-slate-700 select-none">
+          Advanced: priority weights and thresholds
+          <span aria-hidden className="text-slate-400 transition-transform group-open:rotate-180">
+            ▾
+          </span>
+        </summary>
+        <div className="border-t border-slate-200 px-3.5 py-3.5">
+          <p className="mb-3 text-xs text-slate-500">Score S = α·urgency + β·waiting + γ·risk + δ·emergency. Weights only steer the Dynamic strategy.</p>
+          <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
+            {WEIGHT_FIELDS.map((w) => (
+              <Field key={w.key} label={w.label} htmlFor={`w-${w.key}`} hint={w.hint}>
+                <NumberInput id={`w-${w.key}`} value={params.weights[w.key]} step={0.05} onValue={(n) => setParams({ weights: { ...params.weights, [w.key]: Number.isFinite(n) ? n : 0 } })} />
+              </Field>
+            ))}
+            <Field label="Safety limit (min)" htmlFor="safetyThreshold" hint="wait counted as a breach">
+              <NumberInput id="safetyThreshold" value={params.safetyThreshold} min={1} onValue={(n) => setParams({ safetyThreshold: Number.isFinite(n) ? n : 30 })} />
             </Field>
-          ))}
-          <Field label="Safety threshold (min)" htmlFor="safetyThreshold" hint="wait counted as a breach">
-            <NumberInput id="safetyThreshold" value={params.safetyThreshold} min={1} onValue={(n) => setParams({ safetyThreshold: Number.isFinite(n) ? n : 30 })} />
-          </Field>
-          <Field label="Critical urgency ≥" htmlFor="criticalUrgency" hint="1–5">
-            <NumberInput id="criticalUrgency" value={params.criticalUrgency} min={1} max={5} onValue={(n) => setParams({ criticalUrgency: Number.isFinite(n) ? Math.min(5, Math.max(1, Math.round(n))) : 4 })} />
-          </Field>
+            <Field label="Critical from urgency" htmlFor="criticalUrgency" hint="1–5">
+              <NumberInput id="criticalUrgency" value={params.criticalUrgency} min={1} max={5} onValue={(n) => setParams({ criticalUrgency: Number.isFinite(n) ? Math.min(5, Math.max(1, Math.round(n))) : 4 })} />
+            </Field>
+          </div>
         </div>
       </details>
 
-      <div className="mt-4 flex flex-wrap items-center gap-2">
-        <Button onClick={() => void run()} disabled={running}>
-          <Play size={16} aria-hidden /> {running ? "Running…" : "Run Simulation"}
+      <div className="mt-6 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-5">
+        <Button onClick={() => void run()} disabled={running || notReady} className="min-w-40">
+          <Play size={15} aria-hidden /> {running ? "Running…" : "Run simulation"}
         </Button>
         <Button variant="secondary" onClick={() => void resetRun()} disabled={running}>
-          <RotateCcw size={16} aria-hidden /> Reset Current Run
+          <RotateCcw size={15} aria-hidden /> Reset
         </Button>
-        <Button variant="secondary" onClick={() => void runContrast()} disabled={running}>
-          <FlaskConical size={16} aria-hidden /> Load contrast scenario
-        </Button>
-        {(patients.length === 0 || !resourcesSaved) && (
+        <span className="inline-flex items-center gap-1.5">
+          <Button variant="secondary" onClick={() => void runContrast()} disabled={running}>
+            <FlaskConical size={15} aria-hidden /> Contrast scenario
+          </Button>
+          <InfoTip align="right">{CONTRAST_MESSAGE} It replaces the current patients and resources with a small deterministic example.</InfoTip>
+        </span>
+        {notReady && (
           <span className="text-xs text-amber-700">
             {patients.length === 0 ? "Add patients first. " : ""}
             {!resourcesSaved ? "Save a resource configuration first." : ""}
           </span>
         )}
       </div>
-      <p className="mt-2 text-xs text-slate-600">
-        <strong>Contrast scenario:</strong> {CONTRAST_MESSAGE} It replaces the current patients and resources with a small deterministic example.
-      </p>
     </Card>
   );
 }

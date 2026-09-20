@@ -15,14 +15,6 @@ import {
 
 export const PLACEHOLDER_ENGINE_NAME = "placeholder";
 
-/**
- * PLACEHOLDER ENGINE – not a real scheduler.
- *
- * It treats patients one at a time in arrival order and ignores resource
- * capacity and the selected strategy entirely. It exists so the UI stays
- * usable when the real engine is unavailable. Everything it returns is flagged
- * `isPlaceholder: true` and the UI shows PLACEHOLDER_NOTICE next to it.
- */
 export function runPlaceholderSimulation(
   patients: SimPatient[],
   resources: ResourceSet,
@@ -51,6 +43,7 @@ export function runPlaceholderSimulation(
       treatment_time: p.treatment_time,
       required_resources: { ...p.required_resources },
       emergency: false,
+      appointment: p.appointment === true,
       status,
       start_time: began ? start : null,
       end_time: end,

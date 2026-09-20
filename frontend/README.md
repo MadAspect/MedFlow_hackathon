@@ -1,15 +1,42 @@
-# MEDFLOW — Hospital Resource Management Simulator
+# WAITLESS — Hospital Resource Management Simulator
 
 > **This project is a simulation and decision-support prototype. It is not a clinical diagnosis, treatment, or patient-management system.** It uses synthetic patient data only.
 
-MedFlow simulates how a hospital allocates limited resources (doctors, nurses, beds, ICU beds, operating rooms) to incoming patients, and compares three scheduling strategies on identical data.
+Waitless simulates how a hospital allocates limited resources (doctors, nurses, beds, ICU beds, operating rooms) to incoming patients, and compares four scheduling strategies on identical data.
 
-> **MedFlow scheduling, simulation, optimization, and result comparison are deterministic mathematical algorithms. No AI model is used in the simulation.**
+> **Waitless’s simulation, scheduling, resource allocation, optimization, metrics, and system comparison are deterministic mathematical processes. No AI model is used at runtime to make hospital scheduling decisions.**
 > The simulation needs no AI API key and, apart from saving results to the database, runs entirely offline (no network calls, no randomness). Repeating a run with the same input gives identical output.
 
 ## Problem statement
 
 > Given the current patient queue and available doctors, nurses, beds, ICU beds, and operating rooms, which patient should be treated next, and how does the hospital perform under different scheduling strategies?
+
+## Feature checklist against the Hack-a-Matics MedFlow brief
+
+Each status was checked against the running code, not the labels in the UI. “Test” names the automated check.
+
+| Brief requirement | Status | Evidence | Not done / limits |
+|---|---|---|---|
+| Patients with different urgency levels | Complete | urgency 1–5, validated (`lib/validation.ts`, engine input checks) · `pdf-requirements` | – |
+| Maintain a patient queue | Complete | queue per event, `queue_length` timeline, peak queue · `pdf-requirements` | – |
+| Track available resources | Complete | per-minute `in_use` / `capacity` timeline, hospital view | – |
+| Assign beds, doctors, other resources | Complete | atomic all-or-nothing allocation (`engine.ts`) | – |
+| Prioritize urgent cases | Complete | Urgency Only and Dynamic Priority policies | – |
+| Account for waiting time | Complete | `wait = start − arrival`; waiting term in Dynamic Priority | – |
+| Prevent conflicts and capacity violations | Complete | `Σ allocated ≤ capacity` every minute; `resource_overload` is 0 · `pdf-requirements`, `simulation` | – |
+| Calculate resource utilization | Complete | used unit-minutes ÷ capacity-minutes, per resource | measured against nominal capacity |
+| Operations dashboard | Complete | Control Room, Simulation (hospital view, charts, timeline, KPIs), History | – |
+| Emergency patient surges | Complete | deterministic surge (`surge.ts`), start minute adjustable | fixed 10-arrival template; size is not exposed in the UI |
+| Staff shortages | Partially complete | a doctor/nurse outage from a chosen minute (“Resource failure / staff shortage”), reported as *Staff shortage* | no shifts, breaks or recovery time |
+| ICU capacity constraints | Complete | `icu_bed` resource, surge cases need ICU · `pdf-requirements` | – |
+| Ambulance arrival patterns | Partially complete | surge arrivals model a burst of emergency arrivals, one per minute | no vehicles, no configurable arrival patterns |
+| Emergency vehicles as a resource | Missing | not modelled (would need a sixth resource key and a schema change) | future work |
+| Multiple hospital departments | Missing | one shared pool of resources | future work |
+| Unexpected resource failures | Complete | units of any resource go offline at a chosen minute | failures are permanent (no repair) |
+| Compare scheduling strategies | Complete | FCFS, Urgency Only, Dynamic Priority on identical input (`analyse`) | – |
+| Urgency-only vs waiting-time strategies | Complete | Dynamic Priority adds waiting time, risk and emergency; utilization is reported side by side | utilization is reported, it is not part of the priority score |
+| Demo: arrivals → priority → allocation → simulation → statistics | Complete | one-click demo; decision panel shows every score term · `e2e/flow.spec.ts` | – |
+| Results calculated, not hardcoded | Complete | engine output only; no network or AI in `lib/simulation` (checked by a test) | – |
 
 ## Screenshots
 
@@ -24,11 +51,12 @@ _Placeholders — add captures from a demo run:_
 - **Control Room** – status, one-click demo, workflow checklist, latest KPIs and warnings.
 - **Patients** – validated form (unique ID, urgency 1–5, arrival ≥ 0, treatment > 0, ≥ 1 resource), searchable table loaded from the database, example data (18 patients), delete / cancel.
 - **Resources** – configure doctors, nurses, beds, ICU beds, operating rooms; save / load latest; total, allocated, available and utilization.
-- **Simulation** – three strategies, duration, emergency surge, resource failure (resource, start, units), adjustable priority weights.
+- **Simulation** – four strategies, duration, emergency surge, resource failure (resource, start, units), adjustable priority weights.
 - **Interactive hospital view** – drag through time (minute-by-minute), resource cards (green < 70 %, yellow 70–89 %, red ≥ 90 %), Waiting → In treatment → Treated flow, critical/overdue highlighting, current allocations, per-patient **decision explanation**.
 - **Results** – 9 KPI cards, 4 charts (queue length, utilization, wait distribution, treated vs waiting) and a strategy-comparison chart, all from real engine output.
 - **Compare strategies and get advice** – First-Come, First-Served (the most common, basic approach, used as the baseline) vs Urgency Only vs Dynamic Priority on the same input. A recommended strategy chosen by priority-ordered checks, calculated advice for making the system more efficient (including *what if you add one more?* — one unit of each resource, re-simulated), a side-by-side table with the change against the baseline, average wait per urgency level ("who waits?"), and the treatment-order diff. When two strategies start patients in the same order it says so.
 - **Patient timeline, playback and export** – a Gantt-style chart with one row per patient (waiting grey, waiting past the safety limit red, treatment blue) and a playhead that follows the hospital-view clock; click it to jump in time. Play / pause with four speeds animates the whole hospital view. Results can be downloaded as CSV (user-typed text is neutralised against spreadsheet formula injection).
+- **Appointments** – book patients in advance on the *Appointments* page (slot shown as a clock time from 08:00, urgency, treatment time, resources). The form checks the slot against the other bookings and the hospital's capacity while you type, refuses a booking that could never be treated, warns about overbooking and can jump to the next free slot; a *Booked load* chart shows how full each 15 minutes are. Booked appointments are part of every simulation and are protected by the engine (see below). Results show how many started on time, the average delay and what the walk-ins paid for it.
 - **Contrast scenario** – a deterministic example (button on the Simulation page) built so the three strategies visibly choose differently. It does not change the algorithms.
 - **History** – every run is stored; open any past run.
 - **Graceful degradation** – without Supabase credentials the app runs on browser storage and says so.
@@ -71,14 +99,28 @@ Every strategy uses the same patients, arrival times, treatment durations, resou
 1. **First-Come, First-Served** – the normal baseline. Order: arrival time ↑, patient id ↑. Urgency and waiting time are ignored.
 2. **Urgency Only** – order: urgency ↓, arrival ↑, id ↑. Protects critical cases but can starve low-urgency patients; waiting time is ignored.
 3. **Dynamic Priority** – the efficient policy. Order: S_i(T) ↓, urgency ↓, arrival ↑, id ↑, where `S = 5.0·urgency + 0.35·waitingTime + 2.0·deteriorationRisk + 3.0·emergencyFlag`. The waiting-time term lets a low-urgency patient overtake newer, more urgent arrivals once they have waited long enough, so nobody is starved. The score is stored for every patient and shown in the decision explanation.
+4. **Harm-Density Index** – a fourth, purely mathematical policy (`lib/simulation/hazard.ts`) with no weights to tune. Order: `I_i(T)` ↓, urgency ↓, arrival ↑, id ↑, where `I = h(w) ÷ c`:
+   - **Harm rate** `h_i(w) = 2^(urgency + emergency − 1) · (1 + w/30)²` — a hazard function. Each urgency level (or the emergency flag) doubles how fast waiting hurts, and every wait accelerates. Its integral is the cumulative harm `H(w) = base · 10 · ((1 + w/30)³ − 1)`.
+   - **Footprint** `c_i = (treatment_time / 60) · Σ_r π_r · need_ir / capacity_r`, with scarcity price `π_r = 1 + (units of r the whole queue wants) ÷ capacity_r`. Cases that lean on a contested resource cost more, so cheaper cases go first.
+   - Highest harm relieved per priced resource-hour goes first: a fractional-knapsack ("bang per buck") rule that reduces to Smith's rule (the cμ rule) for one resource and linear harm.
+   - **No starvation:** `h(w)` grows without bound while a finite queue's footprint stays bounded, so any waiting patient eventually outranks every new arrival (`tests/hazard.test.ts` checks this against Urgency Only).
+   - It is a modelling assumption, not a clinical model; the three constants (`levelFactor`, `tau`, `kappa`) are in `HAZARD_PARAMS`. On the demo data it has the fewest safety-limit breaches but not the best objective score, so like the others it is a trade-off, and the comparison table shows both sides.
 
 **Optional: protect blocked critical patients** (`reservation`, off by default, works with any strategy). Plain greedy backfilling lets a stream of small patients keep taking freed units, so a critical patient who needs several resources (e.g. two doctors) can wait indefinitely. With this option, when the top-ranked patient is critical, an emergency or already past the safety limit and cannot start, the earliest time they can start is computed from the running treatments and reserved: a lower-ranked patient may still start now only if they finish before that time or use only units that stay spare. This is EASY-style reservation backfilling. Measured on 300 random scenarios per load, it cut average critical-patient wait by about 8% but raised average wait and safety-limit breaches slightly (capacity sits idle while the reservation is held), so it is a trade-off rather than a free win and stays opt-in. Two other ideas were tried and dropped: reserving for every blocked head (worse on all averages), and a throughput bonus for short treatments (Smith's-rule style; under 1% effect because waiting and urgency dominate the score).
+
+**Appointments** (`protectAppointments`, on by default, works with any strategy). An appointment is a patient with `appointment: true` whose `arrival_time` is the booked slot, so its wait is how late it started. Unlike walk-ins the slot is known in advance, so the engine can act on it:
+
+1. *Hold*: a non-urgent walk-in is not started if it would still be running at a booked slot and its resources would then be too few for that appointment (it fits at the slot without the walk-in, not with it). Non-preemptive treatments already running are never interrupted.
+2. *Promote*: once due, an appointment is served ahead of non-urgent walk-ins (otherwise a held walk-in could take the resources kept free for it).
+3. *Never at the expense of safety*: critical patients, emergencies and anyone already past the safety limit are exempt from the hold, so protection cannot starve or endanger anyone.
+
+Trade-off: resources can sit idle just before a slot and walk-ins wait longer. The advice list re-runs the recommended strategy with protection switched the other way and reports both sides (appointments on time, average delay, average walk-in wait). An appointment counts as on time if it starts within 5 minutes of its slot. With no appointments booked the engine behaves exactly as before.
 
 Note: with the default weights, waiting has to differ by roughly 57 minutes (20 ÷ 0.35) before a urgency-1 patient outranks a fresh urgency-5 arrival, so on short or lightly loaded runs Dynamic Priority and Urgency Only can produce the same order; the app then says "These strategies produced the same order for this scenario." Use the contrast scenario to see the strategies diverge.
 
 ### How the recommendation is decided (and why not one score)
 
-First-Come, First-Served is the most common and basic approach, so it is the baseline. All three strategies are full, independent simulations of the same patients and resources; every number comes from those runs.
+First-Come, First-Served is the most common and basic approach, so it is the baseline. All four strategies are full, independent simulations of the same patients and resources; every number comes from those runs.
 
 A single blended score hides trade-offs and depends on weights someone picked. Reordering a queue does not create capacity — it decides *who* waits — so a strategy can win a weighted sum while making low-urgency patients wait far longer. The recommendation therefore walks these checks in priority order (`lib/simulation/advice.ts`), and each check only separates strategies still tied on the ones above it:
 
@@ -94,20 +136,63 @@ The advice list is derived from the recommended strategy's run: unfinished patie
 
 ```
 objectiveScore = 1.0·totalWaitingTime + 4.0·criticalPatientWaitingTime
-               + 10000·patientsRemaining + 10000·resourceOverload + 0.5·maximumWaitingTime
+               + 0.5·maximumWaitingTime + 0.5·completionTime
+               + 10000·patientsRemaining + 10000·capacityViolations
 ```
 
-but the page reports the resulting minutes saved rather than the score.
+(see *Objective function* below). The advice list reports the resulting minutes saved.
+
+## Objective function
+
+Lower is better. Every weight lives in `OBJECTIVE_WEIGHTS` (`lib/simulation/metrics.ts`) and is asserted by a test.
+
+```
+objectiveScore = 1.0   · totalWaitingTime            sum of every patient's wait (minutes)
+               + 4.0   · criticalPatientWaitingTime  sum of the waits of urgency ≥ 4 patients
+               + 0.5   · maximumWaitingTime          the single longest wait (fairness)
+               + 0.5   · completionTime              minute the last treatment finishes
+               + 10000 · patientsRemaining           untreated patients
+               + 10000 · capacityViolations          unit-minutes above capacity (always 0: allocation is atomic)
+```
+
+| Term | Weight | Why |
+|---|---:|---|
+| total waiting | 1.0 | baseline unit: one patient-minute of waiting |
+| critical-patient waiting | 4.0 | a minute of waiting matters more for critical patients |
+| maximum waiting | 0.5 | discourages starving one patient |
+| completion time | 0.5 | rewards finishing all work sooner |
+| patients remaining | 10000 | an untreated patient is worse than any wait |
+| capacity violations | 10000 | never acceptable (never occurs) |
+
+Utilization is reported next to the score but not inside it: a busier hospital is only better if it lowers the waits. Runs saved before the completion-time term existed keep the score they were stored with.
+
+**What “best” means.** The resource what-if re-runs the *full* simulation for one extra unit of each of the five resources (five candidates) and keeps the lowest score. That is a small, fixed, deterministic search, not an exhaustive one, so the app states: *“Best result found within the tested search space.”* Nothing claims a global optimum. Searching combinations of resources, or the priority weights, is future work.
+
+## Theme (light, dark, system)
+
+- A toggle (Light / System / Dark) sits in the sidebar and in the mobile header. Both edit **one** global state, saved in `localStorage` under `waitless-theme`, so the choice survives navigation, refresh and new tabs (other open tabs update immediately).
+- `<html data-theme="light|dark">` drives every colour. A tiny inline script in `app/layout.tsx` sets it while the HTML is parsed, before the first paint, so there is no flash of the wrong theme. *System* follows the operating-system setting live.
+- Colours are CSS variables in `app/globals.css`: `--background --foreground --card --border --muted --primary --success --warning --danger`, chart series `--chart-blue/green/yellow/red/grey` plus axis, grid and tooltip tokens. The Tailwind slate / blue / emerald / amber / red shades are re-mapped for dark, so tables, forms, modals, tooltips, status colours and empty/error/success states follow. Charts read the variables, so they re-colour with the theme.
+- `color-scheme` is set per theme, so native controls (date pickers, select menus, scrollbars) follow. Focus rings use the brand colour in both themes.
+- Tested in a real browser (`e2e/theme.spec.ts`): every route in both themes, persistence after refresh and navigation, system mode, a corrupted saved value, and desktop plus mobile width with no horizontal scroll.
+
+## Database behaviour
+
+- With Supabase credentials and reachable tables the header says **Database connected**.
+- Without credentials, or when the database is unreachable, the app uses browser storage and says so everywhere (**Database disconnected → Browser storage**, and on mobile *Browser storage*). It never claims to be connected in that mode. Results persist per browser and the latest 25 runs are kept.
+- Both adapters key rows by UUID (generated in the browser in local mode, by Postgres in Supabase) and identify patients by the same human-readable `patient_id`; local mode rejects a duplicate `patient_id` case-insensitively. Data is not synchronised between the two modes.
 
 ## Architecture
 
 ```
-app/                 Next.js routes: / , /patients , /resources , /simulation , /history
+app/                 Next.js routes: / , /patients , /appointments , /resources , /simulation , /history
 components/          UI only (forms, tables, cards, charts, hospital view)
 lib/
   simulation/        Pure, testable engine — no React, no database
-    types.ts  policies.ts (score + strategies)  engine.ts  metrics.ts  efficiency.ts (resource what-ifs)
-    surge.ts  compare.ts  advice.ts (recommendation + advice)  placeholder.ts  index.ts
+    types.ts  policies.ts (score + strategies)  engine.ts  metrics.ts (objective weights)  efficiency.ts (resource what-ifs)
+    surge.ts  compare.ts
+    advice.ts (recommendation + advice)  placeholder.ts  index.ts
+  theme.ts           Theme model + pre-paint script (components/ThemeProvider.tsx, ThemeToggle.tsx)
   database.ts        Database interface + Supabase and browser-storage adapters
   supabase.ts        Browser client (refuses secret keys)
   runner.ts          "Run Simulation" pipeline: load → validate → run → save → update statuses
@@ -115,7 +200,8 @@ lib/
   store.tsx          React context that owns state and calls the database
   demo.ts            Synthetic example + demo data
 supabase/            schema.sql, seed.sql
-tests/               vitest suites (simulation, validation, database)
+tests/               vitest suites (simulation, scheduling, pdf-requirements, objective, theme, validation, database, ...)
+e2e/                 Playwright browser tests (theme, demo flow), desktop and mobile width
 ```
 
 The engine's field names (`id`, `arrival_time`, `urgency`, `treatment_time`, `required_resources`, `start_time`, `end_time`, `wait_time`) and resource keys (`doctor`, `nurse`, `bed`, `icu_bed`, `operating_room`) match the repo-level README, so the Python `run_simulation` can be swapped in behind `runEngine()` later.
@@ -140,7 +226,7 @@ The simulation runs in the browser (it is a millisecond-scale computation), so n
 ## Database setup
 
 1. Create a project at <https://supabase.com>.
-2. Open **SQL editor**, paste and run `supabase/schema.sql`.
+2. Open **SQL editor**, paste and run `supabase/schema.sql`. (Already set up before appointments existed? Run it again: it only adds `patients.appointment`, and nothing is sent to that column until an appointment is booked.)
 3. (Optional) run `supabase/seed.sql` for the default configuration and 18 example patients.
 
 Tables: `patients`, `resource_configurations`, `simulation_runs`, `simulation_results`, `patient_allocations` (as specified, plus a few `jsonb` columns — full parameters, timeline, warnings, per-patient decision — so a run can be re-displayed after a refresh). Utilizations are stored as fractions 0–1.
@@ -182,9 +268,11 @@ Production check: `npm run build && npm start`. Type-check: `npm run typecheck`.
 npm test
 ```
 
-91 tests cover: patient validation, duplicate detection, capacity constraints (including randomized scenarios checked against an independent replay), resource release, all three policies, waiting-time and utilization calculations, empty patient list, no resources, emergency surge, resource failure, input rejection (negative resources, invalid urgency), strategy-comparison fairness, persistence across a simulated refresh, and the demo scenario. `tests/scheduling.test.ts` adds the selection rules of each policy, starvation prevention, bottleneck continuation, completion beyond the planned duration, the completion guarantee and explicit errors, the normal-vs-efficient comparison, the contrast scenario, determinism, and a check that the simulation sources make no network calls and contain no AI code.
+183 unit tests (plus 42 browser tests) cover: patient validation, duplicate detection, capacity constraints (including randomized scenarios checked against an independent replay), resource release, all three policies, waiting-time and utilization calculations, empty patient list, no resources, emergency surge, resource failure, input rejection (negative resources, invalid urgency), strategy-comparison fairness, persistence across a simulated refresh, and the demo scenario. `tests/scheduling.test.ts` adds the selection rules of each policy, starvation prevention, bottleneck continuation, completion beyond the planned duration, the completion guarantee and explicit errors, the contrast scenario, determinism, and a check that the simulation sources make no network calls and contain no AI code.
 
-There are no browser (end-to-end) tests in this repository.
+`tests/pdf-requirements.test.ts` has one test per MedFlow requirement of the brief, `tests/objective.test.ts` covers the objective weights and staff shortages, and `tests/theme.test.ts` covers the theme model, the pre-paint script and the token/wiring checks.
+
+**Browser tests** (`npm run test:e2e`, Playwright, `e2e/`) drive the installed Microsoft Edge at desktop (1280×800) and mobile (390×844) width: the theme on every route in both themes, persistence after refresh and navigation, system mode, the storage-status wording, the demo from start to finish, the comparison table in both themes and the hospital view updating through the run. They start `npm run dev` on port 3100 automatically (or reuse it). Set `E2E_CHANNEL=chrome` to use Chrome. Playwright is a dev-only dependency and no browser is downloaded.
 
 ## AI tools used
 
@@ -207,6 +295,8 @@ None. Small CSS transitions/keyframes only: page fade, KPI value pop, utilizatio
 - Not clinically validated; synthetic data only; no diagnosis or treatment guidance.
 - No staff shifts, breaks, travel time, preemption, patient deterioration effects or stochastic arrivals — the model is deterministic.
 - A short horizon rewards short treatments (they finish within the window), so "treated" counts can favour quick cases.
+- Not implemented (see the checklist): multiple hospital departments, emergency vehicles as a resource, configurable ambulance arrival patterns, staff shifts/breaks, and failure recovery times.
+- Resource optimization only tests one extra unit of each resource; it does not search combinations or priority weights. Results are the best found within the tested search space, not a proven optimum.
 - The demo RLS policy is open; no authentication.
 - Local (browser-storage) mode keeps only the latest 25 runs.
 - The Python `backend/` stubs are unimplemented; the app uses the TypeScript engine.

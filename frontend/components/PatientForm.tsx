@@ -71,7 +71,7 @@ export function PatientForm() {
   return (
     <Card
       title="Add patient"
-      description="Synthetic data only. Times are minutes from the start of the simulation."
+      description="Times are minutes from the start of the simulation."
     >
       <form onSubmit={submit} noValidate className="space-y-4">
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -108,7 +108,7 @@ export function PatientForm() {
             {RESOURCE_KEYS.map((key) => {
               const on = needs[key] !== undefined;
               return (
-                <div key={key} className={cx("flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm", on ? "border-blue-400 bg-blue-50" : "border-slate-300 bg-white")}>
+                <div key={key} className={cx("flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm", on ? "border-blue-400 bg-blue-50" : "border-slate-300 bg-surface")}>
                   <input id={`res-${key}`} type="checkbox" checked={on} onChange={(e) => toggle(key, e.target.checked)} className="h-4 w-4 accent-blue-700" />
                   <label htmlFor={`res-${key}`}>{RESOURCE_LABELS[key]}</label>
                   {on && (
@@ -130,12 +130,12 @@ export function PatientForm() {
         </fieldset>
 
         <div className="flex flex-wrap items-center gap-2">
-          <Button type="submit" disabled={busy} className={cx(added && "!bg-emerald-700 !border-emerald-700")}>
+          <Button type="submit" disabled={busy} className={cx(added && "!bg-emerald-600 !border-emerald-600")}>
             {added ? <Check size={16} aria-hidden /> : <UserPlus size={16} aria-hidden />}
-            {added ? "Added" : "Add Patient"}
+            {added ? "Added" : "Add patient"}
           </Button>
           <Button variant="secondary" onClick={() => void loadExample()}>
-            <FlaskConical size={16} aria-hidden /> Load Example Data
+            <FlaskConical size={16} aria-hidden /> Load examples
           </Button>
           <Button
             variant="danger"
@@ -144,7 +144,7 @@ export function PatientForm() {
               if (window.confirm(`Delete all ${patients.length} patients?`)) void clearPatients();
             }}
           >
-            <Trash2 size={16} aria-hidden /> Clear All Patients
+            <Trash2 size={16} aria-hidden /> Clear all
           </Button>
         </div>
       </form>

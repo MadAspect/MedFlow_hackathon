@@ -1,13 +1,3 @@
-/**
- * Shared types for the MedFlow simulation engine.
- *
- * Field names deliberately match the repo-level README interface
- * (`id`, `arrival_time`, `urgency`, `treatment_time`, `required_resources`,
- * `start_time`, `end_time`, `wait_time`) and the database columns, so the same
- * objects can move between the engine, the UI and the database without mapping.
- *
- * All times are integer minutes from the start of the simulation.
- */
 
 export const RESOURCE_KEYS = [
   "doctor",
@@ -19,27 +9,24 @@ export const RESOURCE_KEYS = [
 
 export type ResourceKey = (typeof RESOURCE_KEYS)[number];
 
-/** Capacity (or usage) of every resource. */
 export type ResourceSet = Record<ResourceKey, number>;
 
-/** Units of each resource a patient needs while being treated (missing = 0). */
 export type ResourceRequest = Partial<Record<ResourceKey, number>>;
 
-export type Strategy = "fcfs" | "urgency" | "dynamic";
+export type Strategy = "fcfs" | "urgency" | "dynamic" | "hazard";
 
 export interface SimPatient {
   id: string;
   condition: string;
   arrival_time: number;
-  /** 1 (low) … 5 (critical) */
   urgency: number;
   treatment_time: number;
   required_resources: ResourceRequest;
-  /** Synthetic emergency-surge arrivals get emergency_priority = 1. */
   emergency?: boolean;
+  appointment?: boolean;
+  ambulance?: { alert_time: number };
 }
 
-/** Weights of the dynamic priority score S_i(T). */
 export interface Weights {
   alpha: number; // urgency
   beta: number; // waiting time (per minute)
@@ -49,74 +36,61 @@ export interface Weights {
 
 export interface SimParams {
   strategy: Strategy;
-  /** Simulation horizon in minutes. */
   duration: number;
   weights: Weights;
   emergencySurge: boolean;
-  /** Minute at which the surge begins. */
   surgeStart: number;
-  /** Number of synthetic emergency arrivals in the surge. */
   surgeCount: number;
   resourceFailure: boolean;
   failedResource: ResourceKey;
-  /** Minute at which the failure starts. */
   failureStart: number;
-  /** Units of the failed resource that go offline. */
   failureUnits: number;
-  /** A patient waiting longer than this (minutes) breaches the safety threshold. */
   safetyThreshold: number;
-  /** Urgency at or above this counts as a critical patient. */
   criticalUrgency: number;
-  /**
-   * Protect blocked critical patients (reservation backfilling). When the top-ranked
-   * patient is critical, an emergency or already past the safety limit and cannot
-   * start yet, the earliest time they can start is reserved for them, and
-   * lower-ranked patients only jump ahead if that cannot delay it. Stops a critical
-   * patient who needs several resources from being starved by a stream of small
-   * cases, at the cost of some idle capacity. Off by default.
-   */
   reservation?: boolean;
+  protectAppointments?: boolean;
+  preAlert?: boolean;
 }
 
 export interface ScoreBreakdown {
-  /** alpha * u_i */
   urgency: number;
-  /** beta * w_i */
   waiting: number;
-  /** gamma * r_i */
   risk: number;
-  /** delta * emergency_priority_i */
   emergency: number;
-  /** S_i(T), the sum of the four terms. */
   total: number;
-  /** w_i(T) = T - a_i, in minutes. */
   waiting_time: number;
-  /** r_i(T) in [0, 1). */
   risk_value: number;
+  hazard?: HazardBreakdown;
+}
+
+export interface HazardBreakdown {
+  base_rate: number;
+  wait_factor: number;
+  harm_rate: number;
+  footprint: number;
+  index: number;
 }
 
 export interface SkippedCandidate {
   id: string;
-  /** Resources this higher-ranked candidate was short of. */
   blocked_by: ResourceKey[];
 }
 
-/** Why a patient was chosen at the moment their treatment started. */
 export interface Decision {
-  /** Order in which treatments were started (0-based). */
   seq: number;
   time: number;
   score: ScoreBreakdown;
   required: ResourceRequest;
-  /** Free capacity of every resource just before this allocation. */
   available_before: ResourceSet;
   queue_length: number;
-  /** Higher-ranked patients that could not start because of resource shortage. */
   skipped: SkippedCandidate[];
-  /** Minutes this patient spent queued while short of a resource (absent in runs saved before v2). */
   blocked_minutes?: number;
-  /** The resource that bound this patient's delay longest (absent if never blocked). */
   binding_resource?: ResourceKey | null;
+  appointment_hold?: {
+    minutes: number;
+    appointment_id: string;
+    kind?: "appointment" | "ambulance";
+  };
 }
 
 export type OutcomeStatus =
@@ -134,12 +108,13 @@ export interface PatientOutcome {
   treatment_time: number;
   required_resources: ResourceRequest;
   emergency: boolean;
+  appointment: boolean;
+  ambulance?: boolean;
+  alert_time?: number | null;
   status: OutcomeStatus;
   start_time: number | null;
   end_time: number | null;
-  /** Actual wait if started; wait so far (duration - arrival) if still queued. */
   wait_time: number;
-  /** Score at the start of treatment, or at the end of the run if never started. */
   priority_score: number;
   decision: Decision | null;
 }
@@ -150,17 +125,13 @@ export interface TimelinePoint {
   in_treatment: number;
   treated: number;
   in_use: ResourceSet;
-  /** Displayed capacity (base capacity minus failed units already offline). */
   capacity: ResourceSet;
-  /** Resource blocking the most waiting patients at this minute (absent in runs saved before v2). */
   bottleneck?: ResourceKey | null;
 }
 
 export interface BottleneckEntry {
   resource: ResourceKey;
-  /** Sum over minutes of queued patients whose binding (last-to-clear) shortage was this resource. */
   blocked_patient_minutes: number;
-  /** Distinct patients whose binding shortage was this resource at some point. */
   blocked_patients?: number;
 }
 
@@ -170,30 +141,30 @@ export interface Metrics {
   patients_treated: number;
   average_wait: number;
   maximum_wait: number;
-  /** Average wait of critical patients (urgency >= criticalUrgency). */
   critical_wait: number;
   queue_length_final: number;
   peak_queue_length: number;
   peak_queue_time: number;
   patients_remaining: number;
-  /** Fraction 0..1 of nominal capacity-minutes used, per resource. */
   resource_utilization: ResourceSet;
-  /** Distinct patients that were blocked at least once by a resource shortage. */
   resource_conflicts: number;
-  /** Arrived patients whose wait exceeds the safety threshold. */
   safety_threshold_breaches: number;
   bottlenecks: BottleneckEntry[];
-  /** The planned observation period (SimParams.duration). Not necessarily the end of the run. */
   configured_duration: number;
-  /** Minute at which the last treatment finished (or the run stopped, if it could not finish). */
   actual_completion_time: number;
-  /** Sum of every patient's wait, in minutes. */
   total_waiting_time: number;
-  /** Sum of the waits of critical patients (urgency >= criticalUrgency), in minutes. */
   critical_wait_total: number;
-  /** Σ over minutes of units in use beyond nominal capacity. Atomic allocation keeps this at 0. */
   resource_overload: number;
-  /** 1·total + 4·critical + 10000·remaining + 10000·overload + 0.5·max wait. Lower is better. */
+  appointments_total?: number;
+  appointments_on_time?: number;
+  appointment_average_delay?: number;
+  appointment_max_delay?: number;
+  walk_in_average_wait?: number;
+  ambulance_total?: number;
+  ambulance_on_arrival?: number;
+  ambulance_average_wait?: number;
+  ambulance_max_wait?: number;
+  ambulance_average_lead?: number;
   objective_score: number;
 }
 
@@ -209,17 +180,13 @@ export interface SimWarning {
 export interface SimulationOutput {
   strategy: Strategy;
   params: SimParams;
-  /** Nominal resource capacity the run started with. */
   resources: ResourceSet;
   patients: PatientOutcome[];
   metrics: Metrics;
   timeline: TimelinePoint[];
   warnings: SimWarning[];
-  /** True only when every patient was treated and no treatment or queue is left. */
   completed: boolean;
-  /** Why the run is incomplete (null when completed). */
   error: string | null;
-  /** True when produced by the placeholder engine – NOT a calculated result. */
   isPlaceholder: boolean;
   engine: string;
 }

@@ -2,42 +2,61 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { X } from "lucide-react";
+import { Activity, Ambulance, CalendarDays, FlaskConical, History, LayoutDashboard, Stethoscope, Users, X, type LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
-import { Badge, cx, EcgLine, LoadingBlock, Notice } from "./ui";
+import { ThemeToggle } from "./ThemeToggle";
+import { cx, EcgLine, LoadingBlock, Notice, StatusDot } from "./ui";
 import { DATA_NOTICE, DISCLAIMER } from "@/lib/constants";
+import { slotLabel } from "@/lib/simulation";
 import { StoreProvider, useStore } from "@/lib/store";
 
-const NAV = [
-  { href: "/", label: "Control Room" },
-  { href: "/patients", label: "Patients" },
-  { href: "/resources", label: "Resources" },
-  { href: "/simulation", label: "Simulation" },
-  { href: "/history", label: "History" },
+const NAV: { href: string; label: string; Icon: LucideIcon }[] = [
+  { href: "/", label: "Control Room", Icon: LayoutDashboard },
+  { href: "/patients", label: "Patients", Icon: Users },
+  { href: "/appointments", label: "Appointments", Icon: CalendarDays },
+  { href: "/ambulances", label: "Ambulances", Icon: Ambulance },
+  { href: "/resources", label: "Resources", Icon: Stethoscope },
+  { href: "/simulation", label: "Simulation", Icon: FlaskConical },
+  { href: "/history", label: "History", Icon: History },
 ];
 
-function StatusBar() {
-  const { connection, engineMode, current, patients, ready } = useStore();
-  const lastRun = current?.createdAt ? new Date(current.createdAt).toLocaleString() : "None yet";
-  const dbTone = !ready ? "grey" : connection?.connected ? "green" : "yellow";
+function Logo() {
   return (
-    <ul className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-700" aria-label="System status">
-      <li className="flex items-center gap-1.5" title={connection?.message}>
-        Database:
-        <Badge tone={dbTone}>{!ready ? "Checking…" : connection?.connected ? "Connected" : "Disconnected"}</Badge>
-        {ready && !connection?.connected && <span className="text-slate-500">(browser storage)</span>}
-      </li>
-      <li className="flex items-center gap-1.5">
-        Simulation engine:
-        <Badge tone={engineMode === "real" ? "green" : "yellow"}>{engineMode === "real" ? "Ready" : "Placeholder"}</Badge>
-      </li>
-      <li>
-        Last simulation: <span className="font-medium">{lastRun}</span>
-      </li>
-      <li>
-        Patients stored: <span className="font-medium tabular-nums">{ready ? patients.length : "…"}</span>
-      </li>
-    </ul>
+    <Link href="/" className="flex items-center gap-2.5 rounded-lg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600">
+      <span aria-hidden className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-b from-blue-500 to-blue-600 text-white shadow-sm ring-1 ring-white/20 ring-inset">
+        <EcgLine className="h-4 w-5" />
+      </span>
+      <span className="text-[15px] font-semibold tracking-tight text-slate-900">Waitless</span>
+    </Link>
+  );
+}
+
+function Status() {
+  const { connection, engineMode, patients, ready, current, playing, viewTime } = useStore();
+  return (
+    <div className="space-y-2.5">
+      {current && playing && (
+        <p className="flex items-center gap-2 rounded-lg bg-red-50 px-2.5 py-1.5 text-xs font-medium text-red-700" role="status">
+          <span aria-hidden className="live-dot h-1.5 w-1.5 rounded-full bg-red-500" />
+          Live · {slotLabel(viewTime)}
+        </p>
+      )}
+      <ul className="space-y-1.5" aria-label="System status">
+        <li title={connection?.message}>
+          <StatusDot tone={!ready ? "grey" : connection?.connected ? "green" : "yellow"}>
+            {!ready ? "Checking database…" : connection?.connected ? "Database connected" : "Browser storage"}
+          </StatusDot>
+        </li>
+        <li>
+          <StatusDot tone={engineMode === "real" ? "green" : "yellow"}>{engineMode === "real" ? "Engine ready" : "Placeholder engine"}</StatusDot>
+        </li>
+        <li>
+          <StatusDot tone="blue">
+            <span className="tabular-nums">{ready ? patients.length : "…"}</span> patients stored
+          </StatusDot>
+        </li>
+      </ul>
+    </div>
   );
 }
 
@@ -50,14 +69,20 @@ function Toaster() {
           key={t.id}
           role={t.kind === "error" ? "alert" : "status"}
           className={cx(
-            "pointer-events-auto flex animate-pop items-start justify-between gap-2 rounded-md border px-3 py-2 text-sm shadow-md",
-            t.kind === "success" && "border-emerald-300 bg-emerald-50 text-emerald-900",
-            t.kind === "error" && "border-red-300 bg-red-50 text-red-900",
-            t.kind === "info" && "border-blue-200 bg-blue-50 text-blue-900",
+            "pointer-events-auto flex animate-pop items-start justify-between gap-2 rounded-lg border bg-surface px-3.5 py-2.5 text-sm shadow-lg",
+            t.kind === "success" && "border-emerald-200 text-emerald-900",
+            t.kind === "error" && "border-red-200 text-red-900",
+            t.kind === "info" && "border-slate-200 text-slate-800",
           )}
         >
-          <span>{t.message}</span>
-          <button type="button" aria-label="Dismiss" onClick={() => dismissToast(t.id)} className="mt-0.5 shrink-0 opacity-60 hover:opacity-100">
+          <span className="flex items-start gap-2">
+            <span
+              aria-hidden
+              className={cx("mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full", t.kind === "success" ? "bg-emerald-500" : t.kind === "error" ? "bg-red-500" : "bg-blue-500")}
+            />
+            {t.message}
+          </span>
+          <button type="button" aria-label="Dismiss" onClick={() => dismissToast(t.id)} className="mt-0.5 shrink-0 text-slate-400 hover:text-slate-700">
             <X size={14} />
           </button>
         </div>
@@ -66,64 +91,82 @@ function Toaster() {
   );
 }
 
+function NavLinks({ vertical }: { vertical: boolean }) {
+  const pathname = usePathname();
+  return (
+    <ul className={cx("flex", vertical ? "flex-col gap-0.5" : "gap-1")}>
+      {NAV.map(({ href, label, Icon }) => {
+        const active = href === "/" ? pathname === "/" : pathname.startsWith(href);
+        return (
+          <li key={href}>
+            <Link
+              href={href}
+              aria-current={active ? "page" : undefined}
+              className={cx(
+                "flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-sm font-medium whitespace-nowrap transition-colors",
+                "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-blue-600",
+                active ? "bg-blue-600/[0.08] text-slate-900" : "text-slate-500 hover:bg-slate-900/[0.05] hover:text-slate-900",
+              )}
+            >
+              <Icon size={16} aria-hidden className={active ? "text-blue-700" : "text-slate-400"} />
+              {label}
+            </Link>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 function Frame({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const { ready, connection } = useStore();
   return (
-    <div className="flex min-h-screen flex-col">
-      <header className="glass sticky top-0 z-40 border-b border-slate-200/80 shadow-sm shadow-slate-900/5">
-        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-x-6 gap-y-2 px-4 py-3">
-          <div className="flex items-center gap-3">
-            <span
-              aria-hidden
-              className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-blue-600 to-sky-400 text-white shadow-md shadow-blue-600/30"
-            >
-              <EcgLine className="h-5 w-7" />
-            </span>
-            <div>
-              <p className="bg-gradient-to-r from-blue-800 to-sky-600 bg-clip-text text-xl font-extrabold tracking-wide text-transparent">MEDFLOW</p>
-              <p className="text-xs text-slate-600">Hospital Resource Management Simulator</p>
-            </div>
-          </div>
-          <StatusBar />
+    <div className="min-h-screen lg:pl-56">
+      {/* Desktop: fixed sidebar */}
+      <aside className="fixed inset-y-0 left-0 z-40 hidden w-56 flex-col border-r border-slate-200 bg-surface px-3 py-4 lg:flex">
+        <div className="px-2.5 pb-5">
+          <Logo />
         </div>
-        <nav aria-label="Main" className="mx-auto max-w-7xl overflow-x-auto px-4 pb-2">
-          <ul className="flex gap-1">
-            {NAV.map((item) => {
-              const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
-              return (
-                <li key={item.href}>
-                  <Link
-                    href={item.href}
-                    aria-current={active ? "page" : undefined}
-                    className={cx(
-                      "block rounded-full px-3.5 py-1.5 text-sm font-medium whitespace-nowrap transition-colors",
-                      active ? "bg-blue-700 text-white shadow-sm shadow-blue-900/25" : "text-slate-600 hover:bg-slate-100 hover:text-slate-900",
-                    )}
-                  >
-                    {item.label}
-                  </Link>
-                </li>
-              );
-            })}
-          </ul>
+        <nav aria-label="Main" className="flex-1">
+          <NavLinks vertical />
+        </nav>
+        <div className="space-y-4 border-t border-slate-100 px-2.5 pt-4">
+          <div>
+            <p className="mb-1.5 text-[11px] font-semibold tracking-wide text-slate-500 uppercase">Theme</p>
+            <ThemeToggle />
+          </div>
+          <Status />
+        </div>
+      </aside>
+
+      {/* Mobile: slim top bar */}
+      <header className="sticky top-0 z-40 border-b border-slate-200 bg-surface/90 backdrop-blur lg:hidden">
+        <div className="flex items-center justify-between px-4 py-2.5">
+          <Logo />
+          <div className="flex items-center gap-3">
+            <span className="flex items-center gap-1 text-xs text-slate-500">
+              <Activity size={13} aria-hidden /> {!ready ? "…" : connection?.connected ? "Database" : "Browser storage"}
+            </span>
+            <ThemeToggle />
+          </div>
+        </div>
+        <nav aria-label="Main" className="overflow-x-auto px-3 pb-2">
+          <NavLinks vertical={false} />
         </nav>
       </header>
 
-      <main key={pathname} className="mx-auto w-full max-w-7xl flex-1 animate-fade px-4 py-6">
+      <main key={pathname} className="mx-auto w-full max-w-6xl animate-fade px-4 py-6 sm:px-6 lg:py-8">
         {ready && connection && !connection.connected && (
-          <Notice tone="yellow" className="mb-4">
+          <Notice tone="yellow" className="mb-5">
             <strong>Database disconnected.</strong> {connection.message}
           </Notice>
         )}
         {ready ? children : <LoadingBlock />}
-      </main>
-
-      <footer className="border-t border-slate-200 bg-white">
-        <p className="mx-auto max-w-7xl px-4 py-3 text-xs text-slate-600">
+        <p className="mt-10 border-t border-slate-200 pt-4 text-xs text-slate-400">
           {DISCLAIMER} {DATA_NOTICE}
         </p>
-      </footer>
+      </main>
       <Toaster />
     </div>
   );

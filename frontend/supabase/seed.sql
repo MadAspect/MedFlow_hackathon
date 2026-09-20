@@ -1,4 +1,4 @@
--- MedFlow optional seed data (synthetic). Run AFTER schema.sql.
+-- Waitless optional seed data (synthetic). Run AFTER schema.sql.
 -- Inserts the default resource configuration and the 18 example patients that
 -- the app's "Load Example Data" button creates. Safe to re-run.
 

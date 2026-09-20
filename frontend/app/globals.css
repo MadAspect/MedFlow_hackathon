@@ -1,21 +1,159 @@
 @import "tailwindcss";
 
 /*
- * Light, high-contrast operations-dashboard theme.
+ * Operations-dashboard theme with light and dark modes.
+ *
+ * ONE global theme state drives everything: `<html data-theme="light|dark">`. It is set
+ * before first paint by the inline script in `app/layout.tsx` and afterwards by
+ * `ThemeProvider` (components/ThemeProvider.tsx). The user's choice is Light, Dark or System;
+ * "System" is resolved to light/dark from `prefers-color-scheme` in JavaScript, so this file
+ * only ever needs the attribute (no media query) and the header toggle really changes the site.
+ *
+ * Semantic tokens (every component reads these, directly or through the slate/blue/... remaps):
+ *   --background --foreground --card --border --muted --primary
+ *   --success --warning --danger --chart-blue/green/yellow/red/grey (+ axis/grid/tooltip)
+ *
  * Colour meaning: blue = information, green = available/safe,
  * yellow = warning, red = critical, grey = inactive.
  * Decoration (gradients, glow, ECG line) is kept faint so data stays the focus.
+ *
+ * The components use Tailwind's slate / blue / emerald / amber / red shades directly. Rather
+ * than sprinkle `dark:` variants on every element, dark mode re-maps those shades below:
+ *   - neutrals (slate) run inverted, so `text-slate-900` is near-white and `border-slate-200`
+ *     a quiet dark line;
+ *   - the pale tints (50-300) become deep, low-chroma versions of the same hue;
+ *   - the dark text shades (700-900) become light versions of the same hue;
+ *   - the saturated middle shades (400-600) stay put so fills, dots and bars keep their meaning.
+ * `bg-surface` is the card / input surface (white in light mode).
  */
 :root {
-  --background: #f4f7fb;
+  color-scheme: light;
+  --background: #f6f7f9;
   --foreground: #0f172a;
+  --surface: #ffffff;
+  --surface-strong: #ffffff; /* the raised "selected" segment inside a segmented control */
   --brand: #1d4ed8;
   --brand-soft: #38bdf8;
+
+  /* Semantic aliases (resolved on <html>, so they follow the active theme). */
+  --card: var(--surface);
+  --primary: var(--brand);
+  --border: #e2e8f0;
+  --muted: #64748b;
+  --success: #047857;
+  --warning: #b45309;
+  --danger: #b91c1c;
+
+  /* Charts (SVG attributes can read these variables). */
+  --chart-blue: #2563eb;
+  --chart-green: #10b981;
+  --chart-yellow: #f59e0b;
+  --chart-red: #ef4444;
+  --chart-grey: #94a3b8;
+  --chart-axis: #64748b;
+  --chart-axis-strong: #475569;
+  --chart-grid: #eef2f7;
+  --chart-line: #e2e8f0;
+  --chart-cursor: #f1f5f9;
+  --chart-warn-text: #b45309;
+  --chart-crit-text: #b91c1c;
+  --chart-tooltip-shadow: 0 4px 12px rgb(15 23 42 / 0.08);
+
+  --glass: rgb(255 255 255 / 0.78);
+  --lift-shadow: 0 10px 24px -12px rgb(15 23 42 / 0.25);
+  --sheen: rgb(255 255 255 / 0.45);
+  --scrollbar: rgb(148 163 184 / 0.5);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --background: #0b0f17;
+  --foreground: #e6ebf2;
+  --surface: #111826;
+  --surface-strong: #2a3548;
+  --brand: #60a5fa;
+  --brand-soft: #38bdf8;
+
+  --border: #263143;
+  --muted: #97a4b8;
+  --success: #6ee7b7;
+  --warning: #fcd34d;
+  --danger: #fca5a5;
+
+  --chart-blue: #60a5fa;
+  --chart-green: #34d399;
+  --chart-yellow: #fbbf24;
+  --chart-red: #f87171;
+  --chart-grey: #7a889d;
+  --chart-axis: #94a3b8;
+  --chart-axis-strong: #b6c2d3;
+  --chart-grid: #1b2433;
+  --chart-line: #2a3548;
+  --chart-cursor: #1b2433;
+  --chart-warn-text: #fcd34d;
+  --chart-crit-text: #fca5a5;
+  --chart-tooltip-shadow: 0 6px 16px rgb(0 0 0 / 0.45);
+
+  --glass: rgb(11 15 23 / 0.75);
+  --lift-shadow: 0 10px 24px -12px rgb(0 0 0 / 0.7);
+  --sheen: rgb(255 255 255 / 0.22);
+  --scrollbar: rgb(100 116 139 / 0.5);
+
+  /* Neutrals, inverted. */
+  --color-slate-50: #161e2c;
+  --color-slate-100: #1b2434;
+  --color-slate-200: #263143;
+  --color-slate-300: #354359;
+  --color-slate-400: #7a889d;
+  --color-slate-500: #97a4b8;
+  --color-slate-600: #adb8c9;
+  --color-slate-700: #c5cedb;
+  --color-slate-800: #dde3ec;
+  --color-slate-900: #f1f5f9;
+  --color-slate-950: #f8fafc;
+
+  /* Blue: information / brand. */
+  --color-blue-50: #0e1b33;
+  --color-blue-100: #132649;
+  --color-blue-200: #1f3b6f;
+  --color-blue-300: #2c52a0;
+  --color-blue-700: #93c5fd;
+  --color-blue-800: #bfdbfe;
+  --color-blue-900: #dbeafe;
+
+  /* Emerald: available / safe. */
+  --color-emerald-50: #0a231c;
+  --color-emerald-100: #0d2f25;
+  --color-emerald-200: #145240;
+  --color-emerald-300: #1c6b54;
+  --color-emerald-700: #6ee7b7;
+  --color-emerald-800: #a7f3d0;
+  --color-emerald-900: #d1fae5;
+
+  /* Amber: warning. */
+  --color-amber-50: #2a1d08;
+  --color-amber-100: #3a2809;
+  --color-amber-200: #5c3f0f;
+  --color-amber-300: #7a5312;
+  --color-amber-700: #fcd34d;
+  --color-amber-800: #fde68a;
+  --color-amber-900: #fef3c7;
+
+  /* Red: critical. */
+  --color-red-50: #2b1214;
+  --color-red-100: #3b171a;
+  --color-red-200: #5c2126;
+  --color-red-300: #7f2c32;
+  --color-red-700: #fca5a5;
+  --color-red-800: #fecaca;
+  --color-red-900: #fee2e2;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-surface-strong: var(--surface-strong);
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --animate-fade: fade-in 0.25s ease-out;
   --animate-pop: pop 0.35s ease-out;
@@ -23,21 +161,85 @@
   --animate-rise: rise 0.45s cubic-bezier(0.2, 0.7, 0.2, 1) both;
 }
 
+/* Native controls (checkboxes, radios, range, progress) follow the brand colour in both themes. */
+:root {
+  accent-color: var(--brand);
+}
+
 body {
+  /* flat and quiet: the data is the decoration */
   background-color: var(--background);
-  /* two soft colour washes + a faint dot grid, fixed so they do not scroll */
-  background-image:
-    radial-gradient(48rem 24rem at 92% -8%, rgb(56 189 248 / 0.2), transparent 62%),
-    radial-gradient(42rem 24rem at -8% 2%, rgb(37 99 235 / 0.13), transparent 58%),
-    radial-gradient(rgb(15 23 42 / 0.055) 1px, transparent 1px);
-  background-size: auto, auto, 22px 22px;
-  background-attachment: fixed;
   color: var(--foreground);
   font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "cv11", "ss01";
+}
+
+/* Balanced line breaks keep short headings and captions from leaving a lone word behind. */
+h1,
+h2,
+h3 {
+  text-wrap: balance;
 }
 
 ::selection {
-  background: rgb(56 189 248 / 0.3);
+  background: rgb(37 99 235 / 0.25);
+}
+
+/* Slim scrollbars for the inner scrolling lists. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar) transparent;
+}
+
+/* One consistent, visible keyboard-focus ring. */
+:focus-visible {
+  outline-color: var(--brand);
+}
+
+/*
+ * Table polish, in the base layer so any utility class on a specific cell or row still wins:
+ * quieter header labels, hairline row dividers and a soft hover row.
+ */
+@layer base {
+  table {
+    font-variant-numeric: tabular-nums;
+  }
+  thead th {
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    color: var(--color-slate-500);
+  }
+  tbody tr {
+    border-bottom: 1px solid color-mix(in oklab, var(--color-slate-200) 55%, transparent);
+    transition: background-color 0.15s ease;
+  }
+  tbody tr:last-child {
+    border-bottom: 0;
+  }
+  tbody tr:hover {
+    background-color: color-mix(in oklab, var(--color-slate-100) 55%, transparent);
+  }
+}
+
+/* A soft red pulse on the live clock while a replay is running. */
+@keyframes live-dot {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(0.8);
+  }
+}
+.live-dot {
+  animation: live-dot 1.2s ease-in-out infinite;
 }
 
 @keyframes fade-in {
@@ -130,7 +332,7 @@ body {
 
 /* Header: frosted glass that stays put while the page scrolls. */
 .glass {
-  background: rgb(255 255 255 / 0.78);
+  background: var(--glass);
   -webkit-backdrop-filter: saturate(1.6) blur(12px);
   backdrop-filter: saturate(1.6) blur(12px);
 }
@@ -144,7 +346,7 @@ body {
 }
 .lift:hover {
   transform: translateY(-2px);
-  box-shadow: 0 10px 24px -12px rgb(15 23 42 / 0.25);
+  box-shadow: var(--lift-shadow);
 }
 
 /* Children fade up one after another: set --i on each child. */
@@ -170,7 +372,7 @@ body {
   content: "";
   position: absolute;
   inset: 0;
-  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.45), transparent);
+  background: linear-gradient(90deg, transparent, var(--sheen), transparent);
   animation: sheen 2.4s ease-in-out infinite;
 }
 

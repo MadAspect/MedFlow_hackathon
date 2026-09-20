@@ -26,6 +26,8 @@ import {
   DEMO_PARAMS,
   DEMO_PATIENTS,
   DEMO_RESOURCES,
+  EXAMPLE_AMBULANCES,
+  EXAMPLE_APPOINTMENTS,
   EXAMPLE_PATIENTS,
 } from "./demo";
 import {
@@ -62,7 +64,6 @@ interface Store {
   connection: { connected: boolean; mode: "supabase" | "local"; message: string } | null;
   engineMode: "real" | "placeholder";
   patients: PatientRow[];
-  /** Latest saved resource configuration (defaults until one is saved). */
   resources: ResourceSet;
   resourcesSaved: boolean;
   runs: StoredRun[];
@@ -71,6 +72,12 @@ interface Store {
   setParams: (patch: Partial<SimParams>) => void;
   viewTime: number;
   setViewTime: (t: number) => void;
+  playing: boolean;
+  setPlaying: (playing: boolean) => void;
+  speed: number;
+  setSpeed: (minutesPerSecond: number) => void;
+  liveReplay: boolean;
+  setLiveReplay: (on: boolean) => void;
   running: boolean;
   toasts: Toast[];
   dismissToast: (id: number) => void;
@@ -79,13 +86,14 @@ interface Store {
   cancelPatient: (patientId: string) => Promise<void>;
   clearPatients: () => Promise<void>;
   loadExample: () => Promise<void>;
+  loadExampleAppointments: () => Promise<void>;
+  loadExampleAmbulances: () => Promise<void>;
   saveResources: (resources: ResourceSet) => Promise<boolean>;
   loadLatestResources: () => Promise<ResourceSet | null>;
   runSimulation: () => Promise<boolean>;
   resetRun: () => Promise<void>;
   openRun: (id: string) => Promise<boolean>;
   runDemo: () => Promise<boolean>;
-  /** Load the deterministic contrast scenario and simulate it. */
   runContrast: () => Promise<boolean>;
 }
 
@@ -98,13 +106,19 @@ export function useStore(): Store {
 }
 
 // v2: the default Dynamic Priority weights changed, so settings saved by v1 are not reused.
-const PARAMS_KEY = "medflow.params.v2";
+const PARAMS_KEY = "waitless.params.v2";
+const LIVE_KEY = "waitless.live.v1";
+
+export const PLAYBACK_SPEEDS = [2, 5, 15, 60] as const;
 
 function defaultViewTime(output: SimulationOutput): number {
   return output.metrics.peak_queue_length > 0
     ? output.metrics.peak_queue_time
     : output.params.duration;
 }
+
+const prefersReducedMotion = () =>
+  typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
 
 function errorMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
@@ -122,10 +136,37 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [runs, setRuns] = useState<StoredRun[]>([]);
   const [current, setCurrent] = useState<CurrentRun | null>(null);
   const [params, setParamsState] = useState<SimParams>(() => defaultParams());
-  const [viewTime, setViewTime] = useState(0);
+  const [viewTime, setViewTimeState] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const [speed, setSpeedState] = useState<number>(5);
+  const [liveReplay, setLiveReplayState] = useState(true);
   const [running, setRunning] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const engineMode = activeEngineMode();
+
+  // The playback timer reads the clock from a ref so it never restarts while it ticks.
+  const viewRef = useRef(0);
+  const setViewTime = useCallback((t: number) => {
+    viewRef.current = t;
+    setViewTimeState(t);
+  }, []);
+
+  const saveLive = (patch: { speed?: number; liveReplay?: boolean }) => {
+    try {
+      const saved = JSON.parse(window.localStorage.getItem(LIVE_KEY) ?? "{}");
+      window.localStorage.setItem(LIVE_KEY, JSON.stringify({ ...saved, ...patch }));
+    } catch {
+      /* per-viewer convenience only */
+    }
+  };
+  const setSpeed = useCallback((minutesPerSecond: number) => {
+    setSpeedState(minutesPerSecond);
+    saveLive({ speed: minutesPerSecond });
+  }, []);
+  const setLiveReplay = useCallback((on: boolean) => {
+    setLiveReplayState(on);
+    saveLive({ liveReplay: on });
+  }, []);
 
   const notify = useCallback((kind: Toast["kind"], message: string) => {
     const id = ++toastId.current;
@@ -134,10 +175,45 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
   const dismissToast = useCallback((id: number) => setToasts((prev) => prev.filter((t) => t.id !== id)), []);
 
-  const showRun = useCallback((run: CurrentRun) => {
-    setCurrent(run);
-    setViewTime(defaultViewTime(run.output));
-  }, []);
+  const liveRef = useRef(true);
+  useEffect(() => {
+    liveRef.current = liveReplay;
+  }, [liveReplay]);
+
+  const showRun = useCallback(
+    (run: CurrentRun, options: { replay?: boolean } = {}) => {
+      setCurrent(run);
+      if (options.replay && liveRef.current && !prefersReducedMotion() && run.output.timeline.length > 1) {
+        setViewTime(0);
+        setPlaying(true);
+      } else {
+        setPlaying(false);
+        setViewTime(options.replay ? Math.max(0, run.output.timeline.length - 1) : defaultViewTime(run.output));
+      }
+    },
+    [setViewTime],
+  );
+
+  // Live replay: advance the shared clock one simulated minute at a time (several per tick at
+  // the fast speeds), so every chart and card that follows `viewTime` updates each minute.
+  const lastMinute = current ? Math.max(0, current.output.timeline.length - 1) : 0;
+  useEffect(() => {
+    if (!playing) return;
+    let previous = performance.now();
+    let carry = 0;
+    const id = window.setInterval(() => {
+      const now = performance.now();
+      carry += ((now - previous) / 1000) * speed;
+      previous = now;
+      const whole = Math.floor(carry);
+      if (whole < 1) return;
+      carry -= whole;
+      const next = Math.min(lastMinute, viewRef.current + whole);
+      setViewTime(next);
+      if (next >= lastMinute) setPlaying(false);
+    }, 100);
+    return () => window.clearInterval(id);
+  }, [playing, speed, lastMinute, setViewTime]);
 
   // Initial load: connect, then read everything back from the database.
   useEffect(() => {
@@ -172,6 +248,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       try {
         const saved = window.localStorage.getItem(PARAMS_KEY);
         if (saved) setParamsState(defaultParams(JSON.parse(saved)));
+        const live = JSON.parse(window.localStorage.getItem(LIVE_KEY) ?? "{}");
+        if (typeof live.liveReplay === "boolean") setLiveReplayState(live.liveReplay);
+        if (PLAYBACK_SPEEDS.includes(live.speed)) setSpeedState(live.speed);
       } catch {
         /* per-viewer convenience only */
       }
@@ -214,7 +293,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  /** Replace patients and resources with a scenario, run it and show the result. */
   async function loadScenario(scenario: {
     patients: NewPatient[];
     resources: ResourceSet;
@@ -234,7 +312,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       const result = await executeRun(db(), scenarioParams);
       setPatients(result.patients);
       await refreshRuns();
-      showRun({ output: result.output, runId: result.stored.run.id, createdAt: result.stored.run.created_at });
+      showRun({ output: result.output, runId: result.stored.run.id, createdAt: result.stored.run.created_at }, { replay: true });
       if (result.output.completed) notify("success", scenario.success);
       else notify("error", `Simulation error — not all patients were treated. ${result.output.error ?? ""}`.trim());
       return true;
@@ -259,6 +337,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setParams,
     viewTime,
     setViewTime,
+    playing,
+    setPlaying,
+    speed,
+    setSpeed,
+    liveReplay,
+    setLiveReplay,
     running,
     toasts,
     dismissToast,
@@ -267,7 +351,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       guard(async () => {
         await db().insertPatients([input]);
         await refreshPatients();
-        notify("success", `Patient ${input.patient_id} added.`);
+        notify(
+          "success",
+          input.appointment
+            ? `Appointment ${input.patient_id} booked.`
+            : input.alert_time !== undefined
+              ? `Ambulance ${input.patient_id} logged.`
+              : `Patient ${input.patient_id} added.`,
+        );
         return true;
       }, false),
 
@@ -282,7 +373,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       guard(async () => {
         await db().setPatientStatus(patientId, "cancelled");
         await refreshPatients();
-        notify("info", `Patient ${patientId} cancelled — excluded from simulations.`);
+        const found = patients.find((p) => p.patient_id === patientId);
+        const what = found?.appointment ? "Appointment" : found?.alert_time != null ? "Ambulance" : "Patient";
+        notify("info", `${what} ${patientId} cancelled — excluded from simulations.`);
       }, undefined),
 
     clearPatients: () =>
@@ -303,6 +396,32 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         await db().insertPatients(fresh);
         await refreshPatients();
         notify("success", `Loaded ${fresh.length} synthetic example patients.`);
+      }, undefined),
+
+    loadExampleAppointments: () =>
+      guard(async () => {
+        const existing = new Set(patients.map((p) => p.patient_id.toLowerCase()));
+        const fresh = EXAMPLE_APPOINTMENTS.filter((p) => !existing.has(p.patient_id.toLowerCase()));
+        if (fresh.length === 0) {
+          notify("info", "The example appointments are already booked.");
+          return;
+        }
+        await db().insertPatients(fresh);
+        await refreshPatients();
+        notify("success", `Booked ${fresh.length} example appointments.`);
+      }, undefined),
+
+    loadExampleAmbulances: () =>
+      guard(async () => {
+        const existing = new Set(patients.map((p) => p.patient_id.toLowerCase()));
+        const fresh = EXAMPLE_AMBULANCES.filter((p) => !existing.has(p.patient_id.toLowerCase()));
+        if (fresh.length === 0) {
+          notify("info", "The example ambulances are already logged.");
+          return;
+        }
+        await db().insertPatients(fresh);
+        await refreshPatients();
+        notify("success", `Logged ${fresh.length} example ambulance arrivals.`);
       }, undefined),
 
     saveResources: (next) =>
@@ -334,7 +453,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         const result = await executeRun(db(), params);
         setPatients(result.patients);
         await refreshRuns();
-        showRun({ output: result.output, runId: result.stored.run.id, createdAt: result.stored.run.created_at });
+        showRun({ output: result.output, runId: result.stored.run.id, createdAt: result.stored.run.created_at }, { replay: true });
         if (result.output.isPlaceholder) {
           notify("info", "Placeholder simulation output saved — not a calculated result.");
         } else if (result.output.completed) {
@@ -360,6 +479,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
     resetRun: () =>
       guard(async () => {
+        setPlaying(false);
         setCurrent(null);
         setPatients(await resetPatientStatuses(db()));
         notify("info", "Current run cleared and patient statuses reset. Saved history is untouched.");

@@ -45,7 +45,7 @@ export function PatientTable() {
   return (
     <Card
       title={`Patient queue (${patients.length})`}
-      description="Loaded from the database. Priority score S = α·urgency at arrival; after a run it shows the score at the start of treatment."
+      description="Sorted by arrival. After a run, Priority is the score when treatment started."
       actions={
         <div className="relative w-full sm:w-64">
           <Search size={16} aria-hidden className="absolute top-2.5 left-2.5 text-slate-400" />
@@ -61,7 +61,7 @@ export function PatientTable() {
       }
     >
       {patients.length === 0 ? (
-        <EmptyState>No patients yet. Add one above or choose “Load Example Data”.</EmptyState>
+        <EmptyState>No patients yet. Add one above or choose “Load examples”.</EmptyState>
       ) : rows.length === 0 ? (
         <EmptyState>No patients match “{query}”.</EmptyState>
       ) : (
@@ -79,7 +79,19 @@ export function PatientTable() {
             <tbody className="divide-y divide-slate-100">
               {rows.map((p) => (
                 <tr key={p.id} className={p.status === "cancelled" ? "text-slate-400" : undefined}>
-                  <th scope="row" className="px-2 py-2 font-semibold">{p.patient_id}</th>
+                  <th scope="row" className="px-2 py-2 font-semibold">
+                    {p.patient_id}
+                    {p.appointment && (
+                      <Badge tone="blue" className="ml-1.5 align-middle">
+                        Appt
+                      </Badge>
+                    )}
+                    {p.alert_time != null && (
+                      <Badge tone="red" className="ml-1.5 align-middle">
+                        Amb
+                      </Badge>
+                    )}
+                  </th>
                   <td className="px-2 py-2">{p.condition}</td>
                   <td className="px-2 py-2 tabular-nums">{p.arrival_time} min</td>
                   <td className="px-2 py-2">

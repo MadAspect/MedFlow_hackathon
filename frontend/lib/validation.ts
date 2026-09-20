@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { CONDITIONS } from "./constants";
+import { MAX_AMBULANCE_MINUTES } from "./simulation/ambulance";
 import { RESOURCE_KEYS, type ResourceRequest, type ResourceSet } from "./simulation/types";
 
 export type FieldErrors = Record<string, string>;
@@ -8,7 +9,6 @@ export type ValidationResult<T> =
   | { ok: true; data: T }
   | { ok: false; errors: FieldErrors };
 
-/** Form fields arrive as strings; empty or non-numeric input becomes NaN so it fails validation. */
 export function parseNumberField(raw: string): number {
   const trimmed = raw.trim();
   return trimmed === "" ? NaN : Number(trimmed);
@@ -58,6 +58,8 @@ export interface PatientInput {
   urgency: number;
   treatment_time: number;
   required_resources: ResourceRequest;
+  appointment?: boolean;
+  alert_time?: number;
 }
 
 function collectErrors(error: z.ZodError): FieldErrors {
@@ -69,10 +71,6 @@ function collectErrors(error: z.ZodError): FieldErrors {
   return errors;
 }
 
-/**
- * Validate one patient. `existingIds` enables duplicate detection
- * (case-insensitive, so "p001" and "P001" cannot both exist).
- */
 export function validatePatient(
   input: unknown,
   existingIds: Iterable<string> = [],
@@ -94,6 +92,51 @@ export function validatePatient(
     if (units > 0) required_resources[k] = units;
   }
   return { ok: true, data: { ...parsed.data, required_resources } };
+}
+
+export function validateAppointment(
+  input: unknown,
+  existingIds: Iterable<string> = [],
+): ValidationResult<PatientInput> {
+  const result = validatePatient(input, existingIds);
+  if (!result.ok) {
+    // The form calls the field "slot", so say so.
+    const { arrival_time, ...rest } = result.errors;
+    return {
+      ok: false,
+      errors: arrival_time ? { ...rest, slot: arrival_time.replace(/^Arrival time/, "Appointment time") } : rest,
+    };
+  }
+  return { ok: true, data: { ...result.data, appointment: true } };
+}
+
+export const ambulanceTimingSchema = z.object({
+  dispatch_time: intField("Dispatch time")
+    .min(0, "Dispatch time cannot be negative.")
+    .max(100000, "Dispatch time is too large."),
+  eta: intField("Travel time")
+    .min(1, "Travel time must be at least 1 minute.")
+    .max(MAX_AMBULANCE_MINUTES, `Travel time is limited to ${MAX_AMBULANCE_MINUTES} minutes.`),
+});
+
+export function validateAmbulance(
+  input: unknown,
+  existingIds: Iterable<string> = [],
+): ValidationResult<PatientInput> {
+  const raw = (typeof input === "object" && input !== null ? input : {}) as Record<string, unknown>;
+  const timing = ambulanceTimingSchema.safeParse({ dispatch_time: raw.dispatch_time, eta: raw.eta });
+  const arrival_time = timing.success ? timing.data.dispatch_time + timing.data.eta : NaN;
+  const result = validatePatient({ ...raw, arrival_time }, existingIds);
+
+  const errors: FieldErrors = timing.success ? {} : collectErrors(timing.error);
+  if (!result.ok) {
+    const { arrival_time: arrivalError, ...rest } = result.errors;
+    Object.assign(errors, rest);
+    // With bad timing the NaN arrival is already explained by the timing errors above.
+    if (arrivalError && timing.success) errors.dispatch_time = "Dispatch time plus travel time is too large.";
+  }
+  if (!timing.success || !result.ok) return { ok: false, errors };
+  return { ok: true, data: { ...result.data, alert_time: timing.data.dispatch_time } };
 }
 
 const capacityField = (label: string) =>

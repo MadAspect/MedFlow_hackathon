@@ -1,10 +1,6 @@
 import type { NewPatient } from "./database";
 import type { ResourceSet, SimParams } from "./simulation/types";
 
-/**
- * Synthetic data only. No real patient information appears anywhere in MedFlow.
- */
-
 type Row = [
   id: string,
   condition: string,
@@ -24,7 +20,6 @@ const build = (rows: Row[]): NewPatient[] =>
     required_resources,
   }));
 
-/** 18 varied patients for "Load Example Data". */
 export const EXAMPLE_PATIENTS: NewPatient[] = build([
   ["P001", "Cardiac event", 0, 5, 35, { doctor: 1, nurse: 2, icu_bed: 1 }],
   ["P002", "Fracture", 2, 3, 25, { doctor: 1, nurse: 1, bed: 1 }],
@@ -46,7 +41,33 @@ export const EXAMPLE_PATIENTS: NewPatient[] = build([
   ["P018", "Stroke", 70, 4, 45, { doctor: 1, nurse: 2, operating_room: 1 }],
 ]);
 
-/** Small hospital used by the one-click demo: capacity is deliberately tight. */
+export const EXAMPLE_APPOINTMENTS: NewPatient[] = build([
+  ["A001", "Routine check", 30, 1, 15, { doctor: 1, nurse: 1, bed: 1 }],
+  ["A002", "Fracture", 45, 2, 30, { doctor: 1, nurse: 1, bed: 1 }],
+  ["A003", "Laceration", 60, 2, 20, { doctor: 1, nurse: 1, bed: 1 }],
+  ["A004", "Fracture", 75, 3, 45, { doctor: 2, nurse: 2, operating_room: 1 }],
+  ["A005", "Routine check", 90, 1, 15, { doctor: 1, nurse: 1, bed: 1 }],
+  ["A006", "Minor illness", 105, 1, 10, { doctor: 1, nurse: 1, bed: 1 }],
+]).map((p) => ({ ...p, appointment: true }));
+
+export const EXAMPLE_AMBULANCES: NewPatient[] = (
+  [
+    ["M001", "Cardiac event", 8, 20, 5, 35, { doctor: 1, nurse: 2, icu_bed: 1 }],
+    ["M002", "Multi-trauma", 28, 40, 5, 60, { doctor: 2, nurse: 3, operating_room: 1 }],
+    ["M003", "Stroke", 47, 55, 4, 40, { doctor: 1, nurse: 2, icu_bed: 1 }],
+    ["M004", "Respiratory failure", 58, 65, 5, 45, { doctor: 1, nurse: 2, icu_bed: 1 }],
+    ["M005", "Severe burns", 70, 80, 4, 40, { doctor: 1, nurse: 2, icu_bed: 1 }],
+  ] as [string, string, number, number, number, number, NewPatient["required_resources"]][]
+).map(([patient_id, condition, alert_time, arrival_time, urgency, treatment_time, required_resources]) => ({
+  patient_id,
+  condition,
+  arrival_time,
+  urgency,
+  treatment_time,
+  required_resources,
+  alert_time,
+}));
+
 export const DEMO_RESOURCES: ResourceSet = {
   doctor: 3,
   nurse: 6,
@@ -55,13 +76,8 @@ export const DEMO_RESOURCES: ResourceSet = {
   operating_room: 1,
 };
 
-/**
- * 25 patients for the demo, listed in arrival order. Eight need an ICU bed and
- * three need the single operating room. The emergency surge adds more ICU
- * demand from minute 20. D06 (urgency 3) queues for the operating room from
- * minute 6 while D19 (urgency 4) arrives at minute 36, so when the room frees
- * at minute 40 Urgency Only and Dynamic Priority choose differently.
- */
+const DEMO_AMBULANCE_ALERTS: Record<string, number> = { D07: 0, D12: 6, D20: 22, D23: 33 };
+
 export const DEMO_PATIENTS: NewPatient[] = build([
   ["D01", "Routine check", 0, 2, 15, { nurse: 1, bed: 1 }],
   ["D02", "Fracture", 1, 3, 20, { nurse: 1, bed: 1 }],
@@ -88,9 +104,8 @@ export const DEMO_PATIENTS: NewPatient[] = build([
   ["D23", "Respiratory failure", 43, 4, 25, { nurse: 1, icu_bed: 1 }],
   ["D24", "Minor illness", 47, 1, 10, { nurse: 1, bed: 1 }],
   ["D25", "Laceration", 52, 2, 25, { nurse: 1, bed: 1 }],
-]);
+]).map((p) => (p.patient_id in DEMO_AMBULANCE_ALERTS ? { ...p, alert_time: DEMO_AMBULANCE_ALERTS[p.patient_id] } : p));
 
-/** 60 minutes, surge from minute 20, one ICU bed fails at minute 35. */
 export const DEMO_PARAMS: Partial<SimParams> = {
   strategy: "dynamic",
   duration: 60,
@@ -102,12 +117,6 @@ export const DEMO_PARAMS: Partial<SimParams> = {
   failureUnits: 1,
 };
 
-/**
- * Deterministic contrast scenario. A single ICU bed is the shared constraint.
- * An early low-urgency patient (C, urgency 1, arrives at minute 2) is overtaken
- * by later, more urgent arrivals, and treatment times differ, so the three
- * policies choose different patients at the same decision points.
- */
 export const CONTRAST_PATIENTS: NewPatient[] = build([
   ["A", "Fracture", 0, 2, 20, { nurse: 1, icu_bed: 1 }],
   ["B", "Cardiac event", 1, 5, 20, { doctor: 1, nurse: 1, icu_bed: 1 }],
@@ -118,7 +127,6 @@ export const CONTRAST_PATIENTS: NewPatient[] = build([
   ["G", "Head injury", 60, 4, 15, { doctor: 1, nurse: 1, icu_bed: 1 }],
 ]);
 
-/** One ICU bed; everything else is plentiful, so the ICU bed is the only bottleneck. */
 export const CONTRAST_RESOURCES: ResourceSet = {
   doctor: 2,
   nurse: 2,
@@ -127,7 +135,6 @@ export const CONTRAST_RESOURCES: ResourceSet = {
   operating_room: 1,
 };
 
-/** 60-minute observation period; the run continues past it until everyone is treated. */
 export const CONTRAST_PARAMS: Partial<SimParams> = {
   strategy: "dynamic",
   duration: 60,

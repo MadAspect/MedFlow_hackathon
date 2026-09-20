@@ -1,3 +1,5 @@
+import { isPreAlerted, MAX_AMBULANCE_MINUTES } from "./ambulance";
+import { APPOINTMENT_GRACE } from "./appointments";
 import { buildWarnings, computeMetrics } from "./metrics";
 import { DEFAULT_WEIGHTS, rankQueue, scoreBreakdown } from "./policies";
 import { RESOURCE_LABELS, cloneResourceSet, emptyResourceSet } from "./resources";
@@ -16,12 +18,10 @@ import {
   type TimelinePoint,
 } from "./types";
 
-export const ENGINE_NAME = "medflow-ts-discrete-v2";
+export const ENGINE_NAME = "waitless-ts-discrete-v2";
 
 interface Reservation {
-  /** Earliest minute the blocked, top-ranked patient can start. */
   shadow: number;
-  /** Units still free at that minute after the patient is served. */
   spare: ResourceSet;
 }
 
@@ -45,6 +45,7 @@ export function defaultParams(overrides: Partial<SimParams> = {}): SimParams {
     failureUnits: 1,
     safetyThreshold: 30,
     criticalUrgency: 4,
+    protectAppointments: true,
     ...overrides,
     weights: { ...DEFAULT_WEIGHTS, ...(overrides.weights ?? {}) },
   };
@@ -53,7 +54,6 @@ export function defaultParams(overrides: Partial<SimParams> = {}): SimParams {
 const isNonNegInt = (n: unknown): n is number =>
   typeof n === "number" && Number.isInteger(n) && n >= 0;
 
-/** Reject any input that could break the model's invariants. */
 export function assertValidInput(
   patients: SimPatient[],
   resources: ResourceSet,
@@ -89,6 +89,20 @@ export function assertValidInput(
     if (!isNonNegInt(p.arrival_time)) {
       throw new SimulationInputError(`Patient ${p.id}: arrival time must be an integer >= 0.`);
     }
+    if (p.ambulance !== undefined) {
+      const alert = p.ambulance.alert_time;
+      if (!isNonNegInt(alert) || alert > p.arrival_time) {
+        throw new SimulationInputError(
+          `Patient ${p.id}: the ambulance pre-alert must be a whole minute from 0 up to the arrival time (got ${String(alert)}).`,
+        );
+      }
+      if (p.arrival_time - alert > MAX_AMBULANCE_MINUTES) {
+        throw new SimulationInputError(`Patient ${p.id}: the ambulance journey cannot be longer than ${MAX_AMBULANCE_MINUTES} minutes.`);
+      }
+      if (p.appointment === true) {
+        throw new SimulationInputError(`Patient ${p.id} cannot be both a booked appointment and an ambulance arrival.`);
+      }
+    }
     if (!Number.isInteger(p.urgency) || p.urgency < 1 || p.urgency > 5) {
       throw new SimulationInputError(`Patient ${p.id}: urgency must be an integer from 1 to 5.`);
     }
@@ -109,29 +123,6 @@ export function assertValidInput(
   }
 }
 
-/**
- * Deterministic discrete-event hospital simulation. No randomness, no network,
- * no AI: only queues, sorting and arithmetic.
- *
- * Every iteration handles one event time T:
- *   1. Admit patients whose arrival time is <= T to the waiting queue.
- *   2. Release the resources of treatments that finish at or before T.
- *   3. Rank the queue with the selected policy and walk it in order. A patient
- *      starts only if EVERY resource they need is free (all-or-nothing), so
- *      Σ allocated_r <= capacity_r always holds.
- *   4. Record the state, then jump to the next event: the next arrival, the
- *      earliest treatment completion, or the resource-failure start.
- *
- * A bottleneck (a patient waiting for a resource) is NOT an end condition: the
- * clock simply advances to the next completion, which releases resources, and
- * allocation is attempted again. The configured duration is only the planned
- * observation period; the run continues until every patient is treated.
- * If patients can never be treated (for example a need above total capacity)
- * the result is returned with `completed: false` and an explicit `error`.
- *
- * Treatment is non-preemptive. A failed resource unit goes offline at the
- * failure start, or when the unit next becomes free if it is in use.
- */
 export function runSimulation(
   patients: SimPatient[],
   resources: ResourceSet,
@@ -157,7 +148,6 @@ export function runSimulation(
   const blockedPatientSets = new Map<ResourceKey, Set<number>>(
     RESOURCE_KEYS.map((k) => [k, new Set<number>()]),
   );
-  /** Per patient: minutes blocked, split by binding resource. */
   const patientBlocked: ResourceSet[] = all.map(() => emptyResourceSet());
   const inUse = emptyResourceSet();
   const running: number[] = [];
@@ -179,7 +169,6 @@ export function runSimulation(
     ? Math.min(params.failureUnits, resources[params.failedResource])
     : 0;
 
-  /** Capacity available for NEW allocations at minute t. */
   const allocationCapacity = (t: number): ResourceSet => {
     const cap = cloneResourceSet(resources);
     if (failedUnits > 0 && t >= params.failureStart) {
@@ -196,11 +185,6 @@ export function runSimulation(
   const shortages = (need: SimPatient["required_resources"], cap: ResourceSet) =>
     RESOURCE_KEYS.filter((k) => (need[k] ?? 0) > cap[k] - inUse[k]);
 
-  /**
-   * Of the resources a queued patient is short of, the one that becomes
-   * sufficient last (running treatments release units in end-time order).
-   * A need that exceeds capacity never resolves, so it binds first.
-   */
   const bindingResource = (
     need: SimPatient["required_resources"],
     short: ResourceKey[],
@@ -232,12 +216,6 @@ export function runSimulation(
     return binding;
   };
 
-  /**
-   * Reservation for a blocked, top-ranked patient: the `shadow` time they can
-   * start (walking running treatments in end-time order), and the `spare` units
-   * of each resource that are still free at that moment once they are served.
-   * Null when the need can never be met (that is reported by describeStall).
-   */
   const reserveFor = (need: SimPatient["required_resources"], cap: ResourceSet, now: number): Reservation | null => {
     const free = emptyResourceSet();
     for (const k of RESOURCE_KEYS) free[k] = cap[k] - inUse[k];
@@ -262,11 +240,69 @@ export function runSimulation(
   };
   const useReservation = params.reservation === true;
 
+  // Appointments (and ambulances once alerted) are known ahead of time, so walk-ins are held
+  // back if they would still occupy resources when the booked patient needs them. Only
+  // urgency 5 is never held; critical and surge patients get APPOINTMENT_GRACE minutes of slack.
+  const protectsAppointments = params.protectAppointments !== false;
+  const isExpected = (p: SimPatient) => (p.appointment === true && protectsAppointments) || isPreAlerted(p, params.preAlert);
+  const knownAt = (p: SimPatient) => p.ambulance?.alert_time ?? 0;
+  const slots = arrivalOrder.filter((i) => isExpected(all[i]));
+  const neverHeld = (p: SimPatient) => p.urgency >= 5;
+  const holdSlack = (p: SimPatient) => (p.urgency >= params.criticalUrgency || p.emergency === true ? APPOINTMENT_GRACE : 0);
+  const heldMinutes: number[] = new Array(n).fill(0);
+  const heldFor: (string | null)[] = new Array(n).fill(null);
+
+  const usageAt = (at: number): ResourceSet => {
+    const used = emptyResourceSet();
+    for (const idx of running) {
+      if (startTime[idx]! + all[idx].treatment_time > at) {
+        for (const k of RESOURCE_KEYS) used[k] += all[idx].required_resources[k] ?? 0;
+      }
+    }
+    return used;
+  };
+
+  const holdFor = (cand: SimPatient, now: number): string | null => {
+    const end = now + cand.treatment_time;
+    const slack = holdSlack(cand);
+    for (const fi of slots) {
+      const f = all[fi];
+      const check = f.arrival_time + slack;
+      if (f.arrival_time <= now || check >= end || knownAt(f) > now) continue;
+      const capAtSlot = allocationCapacity(check);
+      const used = usageAt(check);
+      // Other appointments due at the same time need their units as well.
+      for (const gi of slots) {
+        const g = all[gi];
+        if (gi === fi || startTime[gi] !== null || knownAt(g) > now) continue;
+        if (g.arrival_time <= check && check < g.arrival_time + g.treatment_time) {
+          for (const k of RESOURCE_KEYS) used[k] += g.required_resources[k] ?? 0;
+        }
+      }
+      const fits = (withCand: boolean) =>
+        RESOURCE_KEYS.every(
+          (k) => used[k] + (withCand ? (cand.required_resources[k] ?? 0) : 0) + (f.required_resources[k] ?? 0) <= capAtSlot[k],
+        );
+      if (fits(false) && !fits(true)) return f.id;
+    }
+    return null;
+  };
+
+  const promoteAppointments = (ranked: ReturnType<typeof rankQueue>) => {
+    if (!ranked.some((c) => isExpected(c.patient))) return ranked;
+    const first = ranked.findIndex((c) => !isExpected(c.patient) && !neverHeld(c.patient));
+    if (first < 0) return ranked;
+    const tail = ranked.slice(first);
+    return [
+      ...ranked.slice(0, first),
+      ...tail.filter((c) => isExpected(c.patient)),
+      ...tail.filter((c) => !isExpected(c.patient)),
+    ];
+  };
+
   let t = 0;
   let stopTime = 0;
   let error: string | null = null;
-  // Each iteration consumes at least one arrival, completion or failure event,
-  // so the loop is finite; the guard only protects against a future logic bug.
   const maxIterations = 4 * n + 16;
 
   for (let iteration = 0; ; iteration++) {
@@ -276,12 +312,10 @@ export function runSimulation(
       break;
     }
 
-    // 1. Admit arrivals.
     while (arrivalPtr < n && all[arrivalOrder[arrivalPtr]].arrival_time <= t) {
       queue.push(arrivalOrder[arrivalPtr++]);
     }
 
-    // 2. Release finished treatments (and recalculate availability).
     for (let r = running.length - 1; r >= 0; r--) {
       const idx = running[r];
       if (startTime[idx]! + all[idx].treatment_time <= t) {
@@ -292,15 +326,17 @@ export function runSimulation(
     }
 
     const cap = allocationCapacity(t);
+    const heldNow: { index: number; appointment: string }[] = [];
 
-    // 3. Select and allocate atomically.
     if (queue.length > 0) {
       const queueLength = queue.length;
-      const ranked = rankQueue(
+      const policyOrder = rankQueue(
         queue.map((index) => ({ index, patient: all[index] })),
         t,
         params,
+        cap,
       );
+      const ranked = slots.length > 0 ? promoteAppointments(policyOrder) : policyOrder;
       const skipped: SkippedCandidate[] = [];
       const startedNow = new Set<number>();
       // Set by the first ranked patient who cannot start (reservation backfilling).
@@ -320,9 +356,19 @@ export function runSimulation(
             p.urgency >= params.criticalUrgency ||
             p.emergency === true ||
             t - p.arrival_time > params.safetyThreshold;
-          if (useReservation && deserves) reserved = reserveFor(need, cap, t);
+          // A blocked booked appointment is always protected: walk-ins may only jump ahead of it
+          // if that cannot delay it, so smaller cases cannot keep taking the units it waits for.
+          const apptReservation = slots.length > 0 && isExpected(p);
+          if ((useReservation && deserves) || apptReservation) reserved = reserveFor(need, cap, t);
         }
         if (short.length === 0) {
+          if (slots.length > 0 && !isExpected(cand.patient) && !neverHeld(cand.patient)) {
+            const holding = holdFor(cand.patient, t);
+            if (holding !== null) {
+              heldNow.push({ index: cand.index, appointment: holding }); // stays queued, not resource-blocked
+              continue;
+            }
+          }
           if (reserved) {
             // May jump the blocked head only if it cannot delay the head's start.
             const endsInTime = t + cand.patient.treatment_time <= reserved.shadow;
@@ -377,7 +423,6 @@ export function runSimulation(
       }
     }
 
-    // 4. Record the state at this event time.
     snapshots.push({
       t,
       queue_length: queue.length,
@@ -416,6 +461,10 @@ export function runSimulation(
       blockedMinutes[binding] += span;
       patientBlocked[index][binding] += span;
     }
+    for (const { index, appointment } of heldNow) {
+      heldMinutes[index] += span;
+      heldFor[index] ??= appointment;
+    }
     t = next;
   }
 
@@ -429,7 +478,6 @@ export function runSimulation(
   const actualCompletionTime = stopTime;
   const horizon = Math.max(duration, actualCompletionTime);
 
-  // Per-minute timeline (the state is constant between events).
   const timeline: TimelinePoint[] = [];
   let snap = 0;
   for (let m = 0; m <= horizon; m++) {
@@ -475,6 +523,14 @@ export function runSimulation(
         total === 0
           ? null
           : RESOURCE_KEYS.reduce((best, k) => (per[k] > per[best] ? k : best), RESOURCE_KEYS[0]);
+      if (heldMinutes[i] > 0 && heldFor[i] !== null) {
+        const holder = all.find((x) => x.id === heldFor[i]);
+        decision.appointment_hold = {
+          minutes: heldMinutes[i],
+          appointment_id: heldFor[i]!,
+          kind: holder?.ambulance ? "ambulance" : "appointment",
+        };
+      }
     }
 
     return {
@@ -485,6 +541,9 @@ export function runSimulation(
       treatment_time: p.treatment_time,
       required_resources: { ...p.required_resources },
       emergency: p.emergency === true,
+      appointment: p.appointment === true,
+      ambulance: p.ambulance !== undefined,
+      alert_time: p.ambulance?.alert_time ?? null,
       status,
       start_time: start,
       end_time: end,
@@ -531,7 +590,6 @@ export function runSimulation(
   };
 }
 
-/** Explain why the queue can never drain (nothing running, nothing left to arrive). */
 function describeStall(
   waiting: SimPatient[],
   cap: ResourceSet,
@@ -553,7 +611,6 @@ function describeStall(
   return `Not all patients can be treated: ${waiting.length} patient(s) are still waiting at minute ${t} with nothing left to release or arrive (${reasons.join("; ")}${more}). Increase that resource or reduce the patient's requirement.`;
 }
 
-/** Run the same input through every strategy (used by the Strategy Lab). */
 export function runAllStrategies(
   patients: SimPatient[],
   resources: ResourceSet,
@@ -563,5 +620,6 @@ export function runAllStrategies(
     fcfs: runSimulation(patients, resources, { ...params, strategy: "fcfs" }),
     urgency: runSimulation(patients, resources, { ...params, strategy: "urgency" }),
     dynamic: runSimulation(patients, resources, { ...params, strategy: "dynamic" }),
+    hazard: runSimulation(patients, resources, { ...params, strategy: "hazard" }),
   };
 }

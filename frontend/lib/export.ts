@@ -1,10 +1,5 @@
 import { RESOURCE_KEYS, type SimulationOutput } from "./simulation/types";
 
-/**
- * One CSV cell. Text that starts with = + - @ (or a tab / carriage return) would be
- * run as a formula by Excel and Sheets, and condition names are typed by users, so
- * such cells get a leading apostrophe. Numbers are written as they are.
- */
 function cell(value: string | number | boolean | null | undefined): string {
   if (value === null || value === undefined) return "";
   if (typeof value === "number") return Number.isFinite(value) ? String(value) : "";
@@ -25,12 +20,13 @@ export const CSV_COLUMNS = [
   "status",
   "priority_score",
   "emergency",
+  "appointment",
+  "ambulance_alert",
   "resources",
   "binding_resource",
   "blocked_minutes",
 ] as const;
 
-/** Every patient of a run as CSV (times are minutes from the start of the simulation). */
 export function outcomesToCsv(output: SimulationOutput): string {
   const lines = [CSV_COLUMNS.join(",")];
   for (const p of output.patients) {
@@ -50,6 +46,8 @@ export function outcomesToCsv(output: SimulationOutput): string {
         p.status,
         Math.round(p.priority_score * 100) / 100,
         p.emergency,
+        p.appointment,
+        p.alert_time,
         resources,
         p.decision?.binding_resource ?? "",
         p.decision?.blocked_minutes ?? "",
@@ -61,7 +59,6 @@ export function outcomesToCsv(output: SimulationOutput): string {
   return lines.join("\n") + "\n";
 }
 
-/** Save text as a file in the browser. Only call from an event handler. */
 export function downloadCsv(filename: string, csv: string): void {
   // The byte-order mark makes Excel read the file as UTF-8.
   const url = URL.createObjectURL(new Blob(["﻿", csv], { type: "text/csv;charset=utf-8" }));

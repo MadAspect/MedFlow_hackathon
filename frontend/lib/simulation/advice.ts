@@ -1,5 +1,6 @@
+import { AMBULANCE_GRACE } from "./ambulance";
 import { compareStrategies, type Comparison } from "./compare";
-import { runAllStrategies } from "./engine";
+import { runAllStrategies, runSimulation } from "./engine";
 import { improvementPercent, recommendResource, type ResourceRecommendation } from "./efficiency";
 import { treatmentOrder } from "./metrics";
 import { STRATEGIES, STRATEGY_LABELS } from "./policies";
@@ -14,29 +15,14 @@ import {
   type Strategy,
 } from "./types";
 
-/**
- * Strategy verdict and efficiency advice.
- *
- * Why not one blended score? A weighted sum such as "1·total wait + 4·critical
- * wait + 0.5·max wait" hides trade-offs and depends on weights someone chose.
- * Reordering a queue does not create capacity — it decides WHO waits — so a
- * strategy can "win" the sum while making low-urgency patients wait far longer.
- * Instead the verdict walks a short list of checks in priority order, and each
- * check only decides between strategies that are still tied on the ones before.
- * Everything here is deterministic and calculated from the simulation runs.
- */
-
 interface Criterion {
   key: string;
-  /** Short label for the "how this is decided" list. */
   title: string;
-  /** Used mid-sentence: "… gives <phrase>". */
   phrase: string;
   unit: "patients" | "min";
   value: (m: Metrics) => number;
 }
 
-/** Priority order of the checks. Earlier checks outrank later ones. */
 export const DECISION_CRITERIA: readonly Criterion[] = [
   {
     key: "remaining",
@@ -75,11 +61,9 @@ export const DECISION_CRITERIA: readonly Criterion[] = [
   },
 ];
 
-/** Minute-based results within 1 minute or 5% of the best count as tied. */
 export const TIE_MIN_MINUTES = 1;
 export const TIE_FRACTION = 0.05;
 
-/** When strategies tie on every check, keep the simplest one. */
 const TIE_ORDER: Strategy[] = ["fcfs", "dynamic", "urgency"];
 
 const f1 = (n: number) => (Math.round(n * 10) / 10).toString();
@@ -90,7 +74,6 @@ function isTied(c: Criterion, value: number, best: number): boolean {
   return value - best < Math.max(TIE_MIN_MINUTES, TIE_FRACTION * best);
 }
 
-/** Average wait of critical and non-critical patients who have arrived. */
 function groupWaits(out: SimulationOutput) {
   const arrived = out.patients.filter((p) => p.status !== "not_arrived");
   const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
@@ -102,7 +85,6 @@ function groupWaits(out: SimulationOutput) {
 
 export interface StrategyVerdict {
   strategy: Strategy;
-  /** True when no check separated the strategies, so the simplest (First-Come, First-Served) is kept. */
   tie: boolean;
   headline: string;
   details: string[];
@@ -144,8 +126,8 @@ export function recommendStrategy(outputs: Record<Strategy, SimulationOutput>): 
   if (strategy !== "fcfs") {
     const mineWaits = groupWaits(outputs[strategy]);
     const baseWaits = groupWaits(outputs.fcfs);
-    const critical = baseWaits.critical - mineWaits.critical; // > 0 = critical patients wait less
-    const regular = mineWaits.regular - baseWaits.regular; // > 0 = other patients wait more
+    const critical = baseWaits.critical - mineWaits.critical;
+    const regular = mineWaits.regular - baseWaits.regular;
     const parts: string[] = [];
     if (Math.abs(critical) >= 0.05) {
       parts.push(`critical patients wait ${f1(Math.abs(critical))} min ${critical > 0 ? "less" : "more"} on average`);
@@ -162,13 +144,10 @@ export function recommendStrategy(outputs: Record<Strategy, SimulationOutput>): 
 
 export interface UrgencyWaitRow {
   urgency: number;
-  /** Patients at this urgency level (from the First-Come, First-Served run). */
   patients: number;
-  /** Average wait in minutes per strategy. */
   average: Record<Strategy, number>;
 }
 
-/** Average wait for each urgency level under every strategy — shows who pays for a policy. */
 export function waitByUrgency(outputs: Record<Strategy, SimulationOutput>): UrgencyWaitRow[] {
   const levels = new Set<number>();
   for (const s of STRATEGIES) {
@@ -185,7 +164,12 @@ export function waitByUrgency(outputs: Record<Strategy, SimulationOutput>): Urge
     .map((urgency) => ({
       urgency,
       patients: outputs.fcfs.patients.filter((p) => p.status !== "not_arrived" && p.urgency === urgency).length,
-      average: { fcfs: avg("fcfs", urgency), urgency: avg("urgency", urgency), dynamic: avg("dynamic", urgency) },
+      average: {
+        fcfs: avg("fcfs", urgency),
+        urgency: avg("urgency", urgency),
+        dynamic: avg("dynamic", urgency),
+        hazard: avg("hazard", urgency),
+      },
     }));
 }
 
@@ -209,11 +193,12 @@ function change(label: string, saved: number): string | null {
   return null;
 }
 
-/** Concrete, calculated advice for the recommended strategy. Most urgent first. */
 export function buildAdvice(
   outputs: Record<Strategy, SimulationOutput>,
   verdict: StrategyVerdict,
   recommendation: ResourceRecommendation,
+  appointmentAlt: SimulationOutput | null = null,
+  ambulanceAlt: SimulationOutput | null = null,
 ): AdviceItem[] {
   const chosen = outputs[verdict.strategy];
   const m = chosen.metrics;
@@ -299,6 +284,91 @@ export function buildAdvice(
     });
   }
 
+  if (appointmentAlt && (m.appointments_total ?? 0) > 0) {
+    const protectedRun = params.protectAppointments !== false ? chosen : appointmentAlt;
+    const plainRun = params.protectAppointments !== false ? appointmentAlt : chosen;
+    const a = protectedRun.metrics;
+    const b = plainRun.metrics;
+    const total = a.appointments_total ?? 0;
+    const gained = (a.appointments_on_time ?? 0) - (b.appointments_on_time ?? 0);
+    const walkInCost = (a.walk_in_average_wait ?? 0) - (b.walk_in_average_wait ?? 0);
+    const facts = `Holding slots: ${a.appointments_on_time ?? 0} of ${total} appointments on time (average delay ${f1(a.appointment_average_delay ?? 0)} min); without: ${b.appointments_on_time ?? 0} of ${total} (${f1(b.appointment_average_delay ?? 0)} min). Walk-ins wait ${f1(a.walk_in_average_wait ?? 0)} min on average with it and ${f1(b.walk_in_average_wait ?? 0)} min without.`;
+    if (gained > 0) {
+      items.push({
+        id: "appointments",
+        tone: "green",
+        title: `Holding booked slots keeps ${gained} more appointment${gained === 1 ? "" : "s"} on time`,
+        detail: `${facts} ${
+          walkInCost > 0.05 ? `The price is ${f1(walkInCost)} min more waiting for the average walk-in.` : "Walk-ins did not pay for it."
+        } Re-run with the option off to see it yourself.`,
+      });
+    } else if (gained < 0) {
+      items.push({
+        id: "appointments",
+        tone: "yellow",
+        title: "Holding booked slots did not help here",
+        detail: `${facts} Idle capacity before a slot cost more than it saved, so switching the option off gives better punctuality on this scenario.`,
+      });
+    } else if ((b.appointments_total ?? 0) > (b.appointments_on_time ?? 0)) {
+      items.push({
+        id: "appointments",
+        tone: "yellow",
+        title: `${total - (a.appointments_on_time ?? 0)} appointment${total - (a.appointments_on_time ?? 0) === 1 ? " is" : "s are"} late whatever the setting`,
+        detail: `${facts} The delay comes from treatments that were already running, urgent patients, or too much booked at once, not from walk-ins starting too early. Move the bookings apart on the Appointments page or add capacity.`,
+      });
+    } else {
+      items.push({
+        id: "appointments",
+        tone: "blue",
+        title: "Every appointment started on time",
+        detail: `${facts} Slot protection made no difference on this scenario.`,
+      });
+    }
+  }
+
+  if (ambulanceAlt && (m.ambulance_total ?? 0) > 0) {
+    const withAlert = params.preAlert !== false ? chosen : ambulanceAlt;
+    const without = params.preAlert !== false ? ambulanceAlt : chosen;
+    const a = withAlert.metrics;
+    const b = without.metrics;
+    const total = a.ambulance_total ?? 0;
+    const gained = (a.ambulance_on_arrival ?? 0) - (b.ambulance_on_arrival ?? 0);
+    const waitSaved = (b.ambulance_average_wait ?? 0) - (a.ambulance_average_wait ?? 0);
+    const walkInCost = (a.walk_in_average_wait ?? 0) - (b.walk_in_average_wait ?? 0);
+    const facts = `With pre-alerts: ${a.ambulance_on_arrival ?? 0} of ${total} ambulance patients started within ${AMBULANCE_GRACE} min of reaching the hospital (average wait ${f1(a.ambulance_average_wait ?? 0)} min); without: ${b.ambulance_on_arrival ?? 0} of ${total} (${f1(b.ambulance_average_wait ?? 0)} min). Walk-ins wait ${f1(a.walk_in_average_wait ?? 0)} min on average with it and ${f1(b.walk_in_average_wait ?? 0)} min without.`;
+    if (gained > 0 || waitSaved > 0.05) {
+      items.push({
+        id: "ambulances",
+        tone: "green",
+        title: `Acting on ambulance pre-alerts saves ${f1(waitSaved)} min of average wait for inbound patients`,
+        detail: `${facts} ${
+          walkInCost > 0.05 ? `The price is ${f1(walkInCost)} min more waiting for the average walk-in, from resources held free while the ambulance is on its way.` : "Walk-ins did not pay for it."
+        } Re-run with the option off to see it yourself.`,
+      });
+    } else if (gained < 0 || waitSaved < -0.05) {
+      items.push({
+        id: "ambulances",
+        tone: "yellow",
+        title: "Holding resources for ambulances did not help here",
+        detail: `${facts} Capacity held for the journey cost more than it saved on this scenario.`,
+      });
+    } else if ((a.ambulance_max_wait ?? 0) > AMBULANCE_GRACE) {
+      items.push({
+        id: "ambulances",
+        tone: "yellow",
+        title: "Ambulance patients still waited, with or without pre-alerts",
+        detail: `${facts} The delay comes from treatments already running or from a resource the hospital does not have enough of, so warning earlier cannot fix it. Add capacity at the bottleneck.`,
+      });
+    } else {
+      items.push({
+        id: "ambulances",
+        tone: "blue",
+        title: "Every ambulance patient was received on arrival",
+        detail: `${facts} Pre-alerts made no difference on this scenario.`,
+      });
+    }
+  }
+
   const order = (s: Strategy) => treatmentOrder(outputs[s]).join("|");
   if (order("dynamic") === order("urgency") && order("dynamic") !== order("fcfs")) {
     items.push({
@@ -335,7 +405,6 @@ export interface Analysis {
   urgencyWaits: UrgencyWaitRow[];
 }
 
-/** Run every strategy, pick the recommended one, test one-unit resource additions and write the advice. */
 export function analyse(
   patients: SimPatient[],
   resources: ResourceSet,
@@ -344,12 +413,28 @@ export function analyse(
   const outputs = runAllStrategies(patients, resources, params);
   const verdict = recommendStrategy(outputs);
   const recommendation = recommendResource(patients, resources, params, verdict.strategy);
+  // With appointments, also run the winner with slot protection the other way round to show what it buys.
+  const appointmentAlt = patients.some((p) => p.appointment)
+    ? runSimulation(patients, resources, {
+        ...params,
+        strategy: verdict.strategy,
+        protectAppointments: params.protectAppointments === false,
+      })
+    : null;
+  // With ambulances, also run the winner with pre-alerts the other way round to show what they buy.
+  const ambulanceAlt = patients.some((p) => p.ambulance)
+    ? runSimulation(patients, resources, {
+        ...params,
+        strategy: verdict.strategy,
+        preAlert: params.preAlert === false,
+      })
+    : null;
   return {
     outputs,
     comparison: compareStrategies(outputs),
     verdict,
     recommendation,
-    advice: buildAdvice(outputs, verdict, recommendation),
+    advice: buildAdvice(outputs, verdict, recommendation, appointmentAlt, ambulanceAlt),
     urgencyWaits: waitByUrgency(outputs),
   };
 }

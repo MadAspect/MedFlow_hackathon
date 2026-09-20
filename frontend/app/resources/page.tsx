@@ -20,7 +20,7 @@ export default function ResourcesPage() {
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Resources" description="Set how many doctors, nurses, beds, ICU beds and operating rooms the hospital has." />
+      <PageHeader title="Resources" description="How many doctors, nurses, beds, ICU beds and operating rooms the hospital has." />
       <ResourceForm />
 
       <section aria-labelledby="capacity-heading" className="space-y-3">
@@ -29,8 +29,8 @@ export default function ResourcesPage() {
         </h2>
         <p className="text-xs text-slate-600">
           {current
-            ? `Allocation is taken from the latest simulation at minute ${t}. Capacity shows units online at that minute; adjust the time on the Simulation page.`
-            : "No simulation has been run, so nothing is allocated yet."}
+            ? `Usage from the latest simulation at minute ${t}. Change the minute on the Simulation page.`
+            : "No simulation has run yet, so nothing is in use."}
         </p>
         <Card>
           <div className="grid gap-4 sm:grid-cols-4">
